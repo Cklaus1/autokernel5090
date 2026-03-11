@@ -559,6 +559,38 @@ Once block sizes are tuned, memory is usually the bottleneck.
 - Vectorized sin/cos computation.
 - Precompute and cache frequency tables.
 
+**Quantized Matmul W4A16 (quantized_matmul_w4a16):**
+- The baseline dequantizes per-element in the inner loop -- this is intentionally slow.
+- **Vectorized unpacking**: Load int32 once, extract all 8 int4 values with a single shift+mask
+  pattern, dequantize the whole tile at once before `tl.dot`.
+- **Shared memory staging**: Load packed weights to shared memory, dequantize in shared memory,
+  then run the matmul from shared memory. Avoids repeated global memory reads.
+- **Pre-dequantize per tile**: Dequantize an entire BLOCK_SIZE_K × BLOCK_SIZE_N tile of weights
+  before feeding to `tl.dot`. This amortizes the dequant cost across the M dimension.
+- **BLOCK_SIZE_K = group_size (128)**: Align K tiles to group boundaries so each tile uses
+  exactly one scale/zero-point per column. Eliminates group boundary checks.
+- **Decode-1 optimization**: For M=1 (autoregressive decode), use a 1D grid over N with large
+  BLOCK_SIZE_N and loop over K internally. This avoids underutilized 2D grids.
+- **Register-level dequant**: Keep scales/zeros in registers, not re-loaded per K step. When
+  BLOCK_SIZE_K aligns with group_size, scales/zeros are constant within the tile.
+- **Persistent kernel pattern**: For decode (M=1), a persistent kernel that loops over N tiles
+  can avoid grid launch overhead. Each SM processes multiple N tiles.
+- **INT8 intermediate**: Pack two int4 values into int8, use int8 tensor core ops where available
+  (SM90+), then apply scales afterward.
+
+**Dequantize Fused GEMM (dequantize_fused_gemm):**
+- The fused gate+up kernel loads activation once and dequantizes two weight matrices -- this
+  halves the activation memory traffic compared to two separate quantized matmuls.
+- **Shared activation tile**: Load X tile to shared memory once, reuse for both gate and up
+  weight dequantization. This is the key fusion benefit.
+- **Down projection reuse**: After the fused gate+up kernel, the down projection is a standalone
+  quantized matmul. Consider fusing SiLU + elementwise multiply into the epilogue of gate+up
+  and the prologue of the down projection to avoid materializing the intermediate.
+- **All tricks from quantized_matmul_w4a16 apply**: Vectorized unpacking, shared memory staging,
+  aligned block sizes, decode-1 specialization, persistent kernels.
+- **SiLU fusion**: The SiLU(gate) * up computation happens in registers between accumulation
+  and store -- this is essentially free. Do not try to move it.
+
 ### Multi-Kernel Optimization Additions
 
 When optimizing multiple kernels in sequence, you gain cross-kernel insights:
@@ -637,15 +669,17 @@ The `kernels/` directory contains starter implementations:
 
 ```
 kernels/
-  matmul.py              -- matrix multiplication
-  softmax.py             -- online softmax
-  layernorm.py           -- layer normalization
-  rmsnorm.py             -- RMS normalization
-  flash_attention.py     -- flash attention (block-wise online softmax)
-  fused_mlp.py           -- fused SwiGLU MLP
-  cross_entropy.py       -- fused cross entropy loss
-  rotary_embedding.py    -- rotary position embeddings
-  reduce.py              -- parallel reduction (sum)
+  matmul.py                    -- matrix multiplication
+  softmax.py                   -- online softmax
+  layernorm.py                 -- layer normalization
+  rmsnorm.py                   -- RMS normalization
+  flash_attention.py           -- flash attention (block-wise online softmax)
+  fused_mlp.py                 -- fused SwiGLU MLP
+  cross_entropy.py             -- fused cross entropy loss
+  rotary_embedding.py          -- rotary position embeddings
+  reduce.py                    -- parallel reduction (sum)
+  quantized_matmul_w4a16.py    -- W4A16 quantized matmul (INT4 weights, FP16 activations)
+  dequantize_fused_gemm.py     -- fused dequant + SwiGLU MLP with W4A16 weights
 ```
 
 ---

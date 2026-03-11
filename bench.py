@@ -110,6 +110,7 @@ _KNOWN_GPUS: Dict[str, Tuple[float, float, float]] = {
     "L40S":       (362.05, 864.0,  48.0),
     "L4":         (121.0,  300.0,  48.0),
     "A10":        (125.0,  600.0,  6.0),
+    "5090":       (419.0,  1792.0, 96.0),
     "4090":       (330.0,  1008.0, 72.0),
     "4080":       (305.0,  716.8,  64.0),
     "3090":       (142.0,  936.2,  6.0),
@@ -126,7 +127,8 @@ def detect_gpu() -> GPUSpec:
     props = torch.cuda.get_device_properties(0)
     name = props.name
     sm_count = props.multi_processor_count
-    memory_gb = round(props.total_mem / (1024 ** 3), 1)
+    total_mem = getattr(props, 'total_memory', None) or getattr(props, 'total_mem', 0)
+    memory_gb = round(total_mem / (1024 ** 3), 1)
     cc = (props.major, props.minor)
 
     # Try to match a known GPU
@@ -249,6 +251,59 @@ def gen_reduce_inputs(size: dict, dtype: torch.dtype, device: str, seed: int = 4
     return {"x": x}
 
 
+def _pack_int4_weights(K: int, N: int, device: str) -> Tuple[torch.Tensor, ...]:
+    """Generate random packed INT4 weights + scales + zeros for W4A16."""
+    num_packed_k = K // 8
+    raw_int4 = torch.randint(0, 16, (num_packed_k, N, 8), device=device, dtype=torch.int32)
+    shifts = torch.arange(0, 32, 4, device=device, dtype=torch.int32).view(1, 1, 8)
+    packed = (raw_int4 << shifts).sum(dim=-1)  # [K//8, N]
+    return packed
+
+
+def gen_quantized_matmul_w4a16_inputs(size: dict, dtype: torch.dtype, device: str, seed: int = 42) -> dict:
+    torch.manual_seed(seed)
+    M, N, K = size["M"], size["N"], size["K"]
+    group_size = size.get("group_size", 128)
+    activation = torch.randn(M, K, device=device, dtype=dtype)
+    packed_weights = _pack_int4_weights(K, N, device)
+    num_groups = K // group_size
+    scales = torch.randn(num_groups, N, device=device, dtype=dtype).abs() * 0.01 + 0.001
+    zeros = torch.randint(0, 16, (num_groups, N), device=device).to(dtype)
+    return {
+        "activation": activation,
+        "packed_weights": packed_weights,
+        "scales": scales,
+        "zeros": zeros,
+        "group_size": group_size,
+    }
+
+
+def gen_dequantize_fused_gemm_inputs(size: dict, dtype: torch.dtype, device: str, seed: int = 42) -> dict:
+    torch.manual_seed(seed)
+    batch, dim, hidden = size["batch"], size["dim"], size["hidden"]
+    group_size = size.get("group_size", 128)
+    x = torch.randn(batch, dim, device=device, dtype=dtype)
+
+    def _make_qw(rows_packed, cols, num_groups):
+        packed = _pack_int4_weights(rows_packed * 8, cols, device)
+        s = torch.randn(num_groups, cols, device=device, dtype=dtype).abs() * 0.01 + 0.001
+        z = torch.randint(0, 16, (num_groups, cols), device=device).to(dtype)
+        return packed, s, z
+
+    pw_gate, s_gate, z_gate = _make_qw(dim // 8, hidden, dim // group_size)
+    pw_up, s_up, z_up = _make_qw(dim // 8, hidden, dim // group_size)
+    pw_down, s_down, z_down = _make_qw(hidden // 8, dim, hidden // group_size)
+
+    return {
+        "x": x,
+        "packed_w_gate": pw_gate, "packed_w_up": pw_up, "packed_w_down": pw_down,
+        "scales_gate": s_gate, "zeros_gate": z_gate,
+        "scales_up": s_up, "zeros_up": z_up,
+        "scales_down": s_down, "zeros_down": z_down,
+        "group_size": group_size,
+    }
+
+
 # =========================================================================
 # 3. REFERENCE WRAPPERS
 # =========================================================================
@@ -289,6 +344,24 @@ def _ref_rmsnorm(inputs: dict) -> torch.Tensor:
 def _ref_reduce(inputs: dict) -> torch.Tensor:
     import reference
     return reference.reduce_sum_ref(inputs["x"], dim=-1)
+
+def _ref_quantized_matmul_w4a16(inputs: dict) -> torch.Tensor:
+    import reference
+    return reference.quantized_matmul_w4a16_ref(
+        inputs["activation"], inputs["packed_weights"],
+        inputs["scales"], inputs["zeros"], inputs["group_size"],
+    )
+
+def _ref_dequantize_fused_gemm(inputs: dict) -> torch.Tensor:
+    import reference
+    return reference.dequantize_fused_gemm_ref(
+        inputs["x"],
+        inputs["packed_w_gate"], inputs["packed_w_up"], inputs["packed_w_down"],
+        inputs["scales_gate"], inputs["zeros_gate"],
+        inputs["scales_up"], inputs["zeros_up"],
+        inputs["scales_down"], inputs["zeros_down"],
+        inputs["group_size"],
+    )
 
 
 # =========================================================================
@@ -565,6 +638,76 @@ KERNEL_CONFIGS: Dict[str, Dict[str, Any]] = {
         "edge_sizes": [
             ("edge_1023", {"M": 1023, "N": 1024}),
             ("edge_4097", {"M": 4096, "N": 4097}),
+        ],
+    },
+
+    # -----------------------------------------------------------------
+    # QUANTIZED MATMUL W4A16
+    # -----------------------------------------------------------------
+    "quantized_matmul_w4a16": {
+        "test_sizes": [
+            ("tiny",            {"M": 128,  "N": 128,   "K": 128,   "group_size": 128}),
+            ("small",           {"M": 512,  "N": 512,   "K": 512,   "group_size": 128}),
+            ("medium",          {"M": 1024, "N": 1024,  "K": 1024,  "group_size": 128}),
+            ("large",           {"M": 2048, "N": 5120,  "K": 5120,  "group_size": 128}),
+            ("xlarge",          {"M": 4096, "N": 5120,  "K": 5120,  "group_size": 128}),
+            ("qwen35_qkv",      {"M": 2048, "N": 5120,  "K": 5120,  "group_size": 128}),
+            ("qwen35_mlp_gate", {"M": 2048, "N": 13824, "K": 5120,  "group_size": 128}),
+            ("qwen35_mlp_down", {"M": 2048, "N": 5120,  "K": 13824, "group_size": 128}),
+            ("decode_1",        {"M": 1,    "N": 5120,  "K": 5120,  "group_size": 128}),
+        ],
+        "test_dtypes": [torch.float16, torch.bfloat16],
+        "tolerances": {
+            torch.float16:  {"atol": 5e-2, "rtol": 5e-2},
+            torch.bfloat16: {"atol": 1e-1, "rtol": 1e-1},
+        },
+        # FLOPs: same as matmul (2*M*N*K) -- dequant is fused into GEMM
+        "flops_fn": lambda s: 2 * s["M"] * s["N"] * s["K"],
+        # Bytes: packed weights (K/8*N*4) + scales+zeros (K/gs*N*2*dt) + activation + output
+        "bytes_fn": lambda s, dt: (
+            s["K"] // 8 * s["N"] * 4 +
+            s["K"] // s.get("group_size", 128) * s["N"] * 2 * _dtype_bytes(dt) +
+            s["M"] * s["K"] * _dtype_bytes(dt) +
+            s["M"] * s["N"] * _dtype_bytes(dt)
+        ),
+        "input_generator": gen_quantized_matmul_w4a16_inputs,
+        "reference_fn": _ref_quantized_matmul_w4a16,
+        "edge_sizes": [
+            ("edge_1023", {"M": 1023, "N": 5120, "K": 5120, "group_size": 128}),
+            ("edge_1",    {"M": 1,    "N": 5120, "K": 5120, "group_size": 128}),
+        ],
+    },
+
+    # -----------------------------------------------------------------
+    # DEQUANTIZE FUSED GEMM (SwiGLU MLP with W4A16 weights)
+    # -----------------------------------------------------------------
+    "dequantize_fused_gemm": {
+        "test_sizes": [
+            ("tiny",     {"batch": 32,   "dim": 256,  "hidden": 512,   "group_size": 128}),
+            ("small",    {"batch": 256,  "dim": 512,  "hidden": 1024,  "group_size": 128}),
+            ("medium",   {"batch": 1024, "dim": 1024, "hidden": 2048,  "group_size": 128}),
+            ("large",    {"batch": 2048, "dim": 5120, "hidden": 13824, "group_size": 128}),
+            ("qwen35",   {"batch": 2048, "dim": 5120, "hidden": 13824, "group_size": 128}),
+            ("decode_1", {"batch": 1,    "dim": 5120, "hidden": 13824, "group_size": 128}),
+        ],
+        "test_dtypes": [torch.float16, torch.bfloat16],
+        "tolerances": {
+            torch.float16:  {"atol": 5e-2, "rtol": 5e-2},
+            torch.bfloat16: {"atol": 1e-1, "rtol": 1e-1},
+        },
+        # 3 quantized matmuls: gate + up + down
+        "flops_fn": lambda s: 2 * s["batch"] * s["dim"] * s["hidden"] * 3,
+        "bytes_fn": lambda s, dt: (
+            s["dim"] // 8 * s["hidden"] * 4 * 2 +          # gate+up packed weights
+            s["hidden"] // 8 * s["dim"] * 4 +              # down packed weights
+            s["dim"] // s.get("group_size", 128) * s["hidden"] * 2 * _dtype_bytes(dt) * 2 +
+            s["hidden"] // s.get("group_size", 128) * s["dim"] * 2 * _dtype_bytes(dt) +
+            (s["batch"] * s["dim"] + s["batch"] * s["dim"]) * _dtype_bytes(dt)
+        ),
+        "input_generator": gen_dequantize_fused_gemm_inputs,
+        "reference_fn": _ref_dequantize_fused_gemm,
+        "edge_sizes": [
+            ("edge_1023", {"batch": 1023, "dim": 1024, "hidden": 2048, "group_size": 128}),
         ],
     },
 }

@@ -45,6 +45,8 @@ SHAPE_KEYS: Dict[str, List[str]] = {
     "rmsnorm":           ["M", "N"],
     "reduce":            ["M", "N"],
     "rotary_embedding":  ["B", "H", "N", "D"],
+    "quantized_matmul_w4a16": ["M", "N", "K", "group_size"],
+    "dequantize_fused_gemm":  ["M", "N", "K", "group_size"],
 }
 
 # Aliases: profile_report.json may use different key names than bench.py
@@ -78,6 +80,13 @@ SHAPE_ALIAS_MAP: Dict[str, Dict[str, str]] = {
     "rotary_embedding": {
         "B": "batch", "H": "heads", "N": "seq_len", "S": "seq_len", "D": "head_dim",
         "batch": "batch", "heads": "heads", "seq_len": "seq_len", "head_dim": "head_dim",
+    },
+    "quantized_matmul_w4a16": {
+        "M": "M", "N": "N", "K": "K", "group_size": "group_size",
+    },
+    "dequantize_fused_gemm": {
+        "M": "batch", "N": "hidden", "K": "dim",
+        "batch": "batch", "dim": "dim", "hidden": "hidden", "group_size": "group_size",
     },
 }
 
@@ -126,6 +135,14 @@ TOLERANCES_MAP: Dict[str, Dict[str, Dict[str, float]]] = {
         "bfloat16": {"atol": 2e-3, "rtol": 2e-3},
         "float32":  {"atol": 1e-5, "rtol": 1e-5},
     },
+    "quantized_matmul_w4a16": {
+        "float16":  {"atol": 5e-2, "rtol": 5e-2},
+        "bfloat16": {"atol": 1e-1, "rtol": 1e-1},
+    },
+    "dequantize_fused_gemm": {
+        "float16":  {"atol": 5e-2, "rtol": 5e-2},
+        "bfloat16": {"atol": 1e-1, "rtol": 1e-1},
+    },
 }
 
 # FLOPS formulas as source strings, per op_type
@@ -139,6 +156,8 @@ FLOPS_FN_SRC: Dict[str, str] = {
     "rmsnorm":          'return 6 * s["M"] * s["N"]',
     "reduce":           'return s["M"] * s["N"]',
     "rotary_embedding": 'return 6 * s["batch"] * s["heads"] * s["seq_len"] * s["head_dim"]',
+    "quantized_matmul_w4a16": 'return 2 * s["M"] * s["N"] * s["K"]',
+    "dequantize_fused_gemm":  'return 2 * s["batch"] * s["dim"] * s["hidden"] * 3',
 }
 
 # BYTES formulas as source strings, per op_type (dt_bytes is passed in)
@@ -152,6 +171,8 @@ BYTES_FN_SRC: Dict[str, str] = {
     "rmsnorm":          'return (2 * s["M"] * s["N"] + s["N"]) * dt_bytes',
     "reduce":           'return (s["M"] * s["N"] + s["M"]) * dt_bytes',
     "rotary_embedding": 'return (s["batch"] * s["heads"] * s["seq_len"] * s["head_dim"] * 2 + s["seq_len"] * s["head_dim"]) * dt_bytes',
+    "quantized_matmul_w4a16": 'return s["K"] // 8 * s["N"] * 4 + s["K"] // s.get("group_size", 128) * s["N"] * 2 * dt_bytes + s["M"] * s["K"] * dt_bytes + s["M"] * s["N"] * dt_bytes',
+    "dequantize_fused_gemm":  'return s["dim"] // 8 * s["hidden"] * 4 * 2 + s["hidden"] // 8 * s["dim"] * 4 + s["dim"] // s.get("group_size", 128) * s["hidden"] * 4 * dt_bytes + s["hidden"] // s.get("group_size", 128) * s["dim"] * 2 * dt_bytes + s["batch"] * s["dim"] * 2 * dt_bytes',
 }
 
 # Speedup potential heuristic per op_type
@@ -165,6 +186,8 @@ SPEEDUP_ESTIMATES: Dict[str, str] = {
     "rmsnorm":          "1.5-3x",
     "reduce":           "1.5-2x",
     "rotary_embedding": "1.5-2x",
+    "quantized_matmul_w4a16": "2-4x",
+    "dequantize_fused_gemm":  "2-4x",
 }
 
 
@@ -234,6 +257,8 @@ def get_default_shape(op_type: str) -> Dict[str, int]:
         "rmsnorm":          {"M": 4096, "N": 4096},
         "reduce":           {"M": 4096, "N": 4096},
         "rotary_embedding": {"batch": 2, "heads": 32, "seq_len": 1024, "head_dim": 128},
+        "quantized_matmul_w4a16": {"M": 2048, "N": 5120, "K": 5120, "group_size": 128},
+        "dequantize_fused_gemm":  {"batch": 2048, "dim": 5120, "hidden": 13824, "group_size": 128},
     }
     return defaults.get(op_type, {"M": 2048, "N": 2048})
 

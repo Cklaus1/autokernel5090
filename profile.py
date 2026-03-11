@@ -42,6 +42,8 @@ WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worksp
 _KERNEL_CLASSIFICATION: List[Tuple[List[str], str]] = [
     (["flash", "fmha"],                       "flash_attention"),
     (["attention"],                            "flash_attention"),
+    (["dequant.*gemm", "w4a16.*mlp", "quant.*fused"], "dequantize_fused_gemm"),
+    (["quant.*mm", "w4a16", "int4.*mm"],      "quantized_matmul_w4a16"),
     (["gemm", "matmul", "cublas"],             "matmul"),
     (["softmax"],                              "softmax"),
     (["layer_norm", "layernorm"],              "layernorm"),
@@ -92,7 +94,7 @@ def _fallback_detect_gpu() -> GPUSpec:
     props = torch.cuda.get_device_properties(0)
     name = props.name
     sm_count = props.multi_processor_count
-    memory_gb = round(props.total_mem / (1024 ** 3), 1)
+    memory_gb = round((getattr(props, 'total_memory', None) or getattr(props, 'total_mem', 0)) / (1024 ** 3), 1)
     cc = (props.major, props.minor)
 
     # Known GPUs: name_fragment -> (peak_fp16_tflops, peak_bandwidth_gb_s, l2_cache_mb)
@@ -106,6 +108,7 @@ def _fallback_detect_gpu() -> GPUSpec:
         "L40S":      (362.05, 864.0, 48.0),
         "L4":        (121.0, 300.0, 48.0),
         "A10":       (125.0, 600.0, 6.0),
+        "5090":      (419.0, 1792.0, 96.0),
         "4090":      (330.0, 1008.0, 72.0),
         "4080":      (305.0, 716.8, 64.0),
         "3090":      (142.0, 936.2, 6.0),
@@ -457,9 +460,9 @@ def estimate_roofline_position(
     gpu: GPUSpec,
 ) -> str:
     """Rough heuristic: is this kernel compute-bound or memory-bound?"""
-    compute_bound_ops = {"matmul", "flash_attention"}
+    compute_bound_ops = {"matmul", "flash_attention", "quantized_matmul_w4a16"}
     memory_bound_ops = {"softmax", "layernorm", "rmsnorm", "reduce", "rotary_embedding",
-                        "fused_mlp", "cross_entropy"}
+                        "fused_mlp", "cross_entropy", "dequantize_fused_gemm"}
 
     if op_type in compute_bound_ops:
         return "compute-bound"
