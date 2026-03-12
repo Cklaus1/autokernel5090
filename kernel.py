@@ -13,6 +13,7 @@ import triton
 import triton.language as tl
 
 
+
 @triton.autotune(
     configs=[
         triton.Config({'BLOCK_SIZE_K': 32, 'BLOCK_SIZE_N': 64}, num_warps=4, num_stages=2),
@@ -64,6 +65,9 @@ def dequant_kernel(
     tl.store(w_ptrs, w_dequant, mask=k_mask[:, None] & n_mask[None, :])
 
 
+_buf = {}
+
+
 def kernel_fn(
     activation: torch.Tensor,
     packed_weights: torch.Tensor,
@@ -76,19 +80,24 @@ def kernel_fn(
     M, K = activation.shape
     N = packed_weights.shape[1]
 
-    W = torch.empty((K, N), device=activation.device, dtype=activation.dtype)
+    # Dequantize into transposed layout [N, K] for F.linear
+    key = (K, N, activation.dtype)
+    if key not in _buf:
+        _buf[key] = torch.empty((N, K), device=activation.device, dtype=activation.dtype)
+    Wt = _buf[key]
 
     def dequant_grid(META):
         return (triton.cdiv(K, META['BLOCK_SIZE_K']), triton.cdiv(N, META['BLOCK_SIZE_N']))
 
     dequant_kernel[dequant_grid](
-        packed_weights, scales, zeros, W,
+        packed_weights, scales, zeros, Wt,
         K, N,
         packed_weights.stride(0), packed_weights.stride(1),
         scales.stride(0), scales.stride(1),
         zeros.stride(0), zeros.stride(1),
-        W.stride(0), W.stride(1),
+        # Store transposed: K→stride_wn (column), N→stride_wk (row)
+        1, K,
         QUANT_GROUP_SIZE=group_size,
     )
 
-    return torch.mm(activation, W)
+    return torch.nn.functional.linear(activation, Wt)
