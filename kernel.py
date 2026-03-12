@@ -45,7 +45,6 @@ import triton.language as tl
 def quantized_matmul_w4a16_kernel(
     A_ptr, QW_ptr, S_ptr, Z_ptr, C_ptr,
     M, N, K,
-    group_size,
     stride_am, stride_ak,
     stride_qwk, stride_qwn,
     stride_skg, stride_sn,
@@ -55,8 +54,9 @@ def quantized_matmul_w4a16_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
+    QUANT_GROUP_SIZE: tl.constexpr,
 ):
-    """Persistent W4A16 matmul with flat K loop."""
+    """Persistent W4A16 matmul with flat K loop and constexpr group_size."""
     pid = tl.program_id(0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
@@ -83,8 +83,8 @@ def quantized_matmul_w4a16_kernel(
             k_start = k_step * BLOCK_SIZE_K
             offs_k = k_start + tl.arange(0, BLOCK_SIZE_K)
 
-            # Determine group index for this K block
-            g = k_start // group_size
+            # Determine group index — constexpr division becomes a shift
+            g = k_start // QUANT_GROUP_SIZE
 
             # Load scales/zeros for this group — [BLOCK_SIZE_N]
             s_ptrs = S_ptr + g * stride_skg + offs_n * stride_sn
@@ -104,7 +104,7 @@ def quantized_matmul_w4a16_kernel(
             qw_packed = tl.load(qw_ptrs, mask=n_mask[None, :], other=0)
             int4_vals = (qw_packed >> bit_shift[:, None]) & 0xF
 
-            # Dequantize with hoisted scales/zeros
+            # Dequantize
             w_dequant = (int4_vals.to(a.dtype) - zeros[None, :]) * scales[None, :]
             acc = tl.dot(a, w_dequant, acc)
 
@@ -137,11 +137,12 @@ def kernel_fn(
 
     quantized_matmul_w4a16_kernel[grid](
         activation, packed_weights, scales, zeros, C,
-        M, N, K, group_size,
+        M, N, K,
         activation.stride(0), activation.stride(1),
         packed_weights.stride(0), packed_weights.stride(1),
         scales.stride(0), scales.stride(1),
         zeros.stride(0), zeros.stride(1),
         C.stride(0), C.stride(1),
+        QUANT_GROUP_SIZE=group_size,
     )
     return C
