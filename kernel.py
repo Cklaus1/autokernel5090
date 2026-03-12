@@ -15,103 +15,53 @@ import triton.language as tl
 
 @triton.autotune(
     configs=[
-        # M=256
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
-        # M=128
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=8, num_stages=1),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=8, num_stages=1),
-        # M=64
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=8, num_stages=1),
-        # Decode
-        triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
+        triton.Config({'BLOCK_SIZE_K': 32, 'BLOCK_SIZE_N': 64}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_SIZE_K': 32, 'BLOCK_SIZE_N': 128}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_SIZE_K': 32, 'BLOCK_SIZE_N': 256}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_SIZE_K': 64, 'BLOCK_SIZE_N': 64}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_SIZE_K': 64, 'BLOCK_SIZE_N': 128}, num_warps=4, num_stages=2),
     ],
-    key=['M', 'N', 'K'],
+    key=['K', 'N'],
 )
 @triton.jit
-def quantized_matmul_w4a16_kernel(
-    A_ptr, QW_ptr, S_ptr, Z_ptr, C_ptr,
-    M, N, K,
-    stride_am, stride_ak,
+def dequant_kernel(
+    QW_ptr, S_ptr, Z_ptr, W_ptr,
+    K, N,
     stride_qwk, stride_qwn,
     stride_skg, stride_sn,
     stride_zkg, stride_zn,
-    stride_cm, stride_cn,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
+    stride_wk, stride_wn,
     BLOCK_SIZE_K: tl.constexpr,
-    GROUP_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
     QUANT_GROUP_SIZE: tl.constexpr,
 ):
-    """Persistent W4A16 matmul with flat K loop and constexpr group_size."""
-    pid = tl.program_id(0)
-    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
-    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    num_tiles = num_pid_m * num_pid_n
+    """Dequantize INT4 packed weights to FP16."""
+    pid_k = tl.program_id(0)
+    pid_n = tl.program_id(1)
 
-    for tile_id in range(pid, num_tiles, tl.num_programs(0)):
-        # L2 swizzle
-        num_pid_in_group = GROUP_SIZE_M * num_pid_n
-        group_id = tile_id // num_pid_in_group
-        first_pid_m = group_id * GROUP_SIZE_M
-        group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-        pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_size_m)
-        pid_n = (tile_id % num_pid_in_group) // group_size_m
+    offs_k = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+    offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    k_mask = offs_k < K
+    n_mask = offs_n < N
 
-        offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-        offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-        n_mask = offs_n < N
+    g = offs_k // QUANT_GROUP_SIZE
 
-        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-        m_mask = offs_m < M
+    s_ptrs = S_ptr + g[:, None] * stride_skg + offs_n[None, :] * stride_sn
+    z_ptrs = Z_ptr + g[:, None] * stride_zkg + offs_n[None, :] * stride_zn
+    scales = tl.load(s_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=1.0)
+    zeros = tl.load(z_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
 
-        num_k_steps = K // BLOCK_SIZE_K
-        for k_step in range(0, num_k_steps):
-            k_start = k_step * BLOCK_SIZE_K
-            offs_k = k_start + tl.arange(0, BLOCK_SIZE_K)
+    packed_k_idx = offs_k // 8
+    bit_shift = ((offs_k & 7) * 4).to(tl.int32)
 
-            # Determine group index — constexpr division becomes a shift
-            g = k_start // QUANT_GROUP_SIZE
+    qw_ptrs = QW_ptr + packed_k_idx[:, None] * stride_qwk + offs_n[None, :] * stride_qwn
+    qw_packed = tl.load(qw_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0)
+    int4_vals = (qw_packed >> bit_shift[:, None]) & 0xF
 
-            # Load scales/zeros for this group — [BLOCK_SIZE_N]
-            s_ptrs = S_ptr + g * stride_skg + offs_n * stride_sn
-            z_ptrs = Z_ptr + g * stride_zkg + offs_n * stride_zn
-            scales = tl.load(s_ptrs, mask=n_mask, other=1.0)
-            zeros = tl.load(z_ptrs, mask=n_mask, other=0.0)
+    w_dequant = (int4_vals.to(scales.dtype) - zeros) * scales
 
-            # Load activation tile
-            a_ptrs = A_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
-            a = tl.load(a_ptrs, mask=m_mask[:, None], other=0.0)
-
-            # Unpack int4 from int32
-            packed_k_idx = offs_k // 8
-            bit_shift = ((offs_k & 7) * 4).to(tl.int32)
-
-            qw_ptrs = QW_ptr + packed_k_idx[:, None] * stride_qwk + offs_n[None, :] * stride_qwn
-            qw_packed = tl.load(qw_ptrs, mask=n_mask[None, :], other=0)
-            int4_vals = (qw_packed >> bit_shift[:, None]) & 0xF
-
-            # Dequantize
-            w_dequant = (int4_vals.to(a.dtype) - zeros[None, :]) * scales[None, :]
-            acc = tl.dot(a, w_dequant, acc)
-
-        c = acc.to(C_ptr.dtype.element_ty)
-        c_ptrs = C_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
-        mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
-        tl.store(c_ptrs, c, mask=mask)
+    w_ptrs = W_ptr + offs_k[:, None] * stride_wk + offs_n[None, :] * stride_wn
+    tl.store(w_ptrs, w_dequant, mask=k_mask[:, None] & n_mask[None, :])
 
 
 def kernel_fn(
@@ -126,23 +76,19 @@ def kernel_fn(
     M, K = activation.shape
     N = packed_weights.shape[1]
 
-    C = torch.empty((M, N), device=activation.device, dtype=activation.dtype)
+    W = torch.empty((K, N), device=activation.device, dtype=activation.dtype)
 
-    def grid(META):
-        num_m = triton.cdiv(M, META['BLOCK_SIZE_M'])
-        num_n = triton.cdiv(N, META['BLOCK_SIZE_N'])
-        total = num_m * num_n
-        num_programs = min(total, 680)
-        return (num_programs,)
+    def dequant_grid(META):
+        return (triton.cdiv(K, META['BLOCK_SIZE_K']), triton.cdiv(N, META['BLOCK_SIZE_N']))
 
-    quantized_matmul_w4a16_kernel[grid](
-        activation, packed_weights, scales, zeros, C,
-        M, N, K,
-        activation.stride(0), activation.stride(1),
+    dequant_kernel[dequant_grid](
+        packed_weights, scales, zeros, W,
+        K, N,
         packed_weights.stride(0), packed_weights.stride(1),
         scales.stride(0), scales.stride(1),
         zeros.stride(0), zeros.stride(1),
-        C.stride(0), C.stride(1),
+        W.stride(0), W.stride(1),
         QUANT_GROUP_SIZE=group_size,
     )
-    return C
+
+    return torch.mm(activation, W)
