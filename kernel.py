@@ -15,28 +15,29 @@ import triton.language as tl
 
 @triton.autotune(
     configs=[
-        # M=256 variants — best for large prefill
+        # M=256
         triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=8, num_stages=1),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
-        # M=128 variants
+        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
+        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
+        # M=128
         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=3),
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=4),
         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
         triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=8, num_stages=1),
-        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 32, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
-        # M=64 variants
+        triton.Config({'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=8, num_stages=1),
+        # M=64
         triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
         triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
-        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=8, num_stages=1),
-        # Small M for decode
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
+        triton.Config({'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=8, num_stages=1),
+        # Decode
         triton.Config({'BLOCK_SIZE_M': 32, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
         triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
+        triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 64, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=4),
+        triton.Config({'BLOCK_SIZE_M': 16, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 8}, num_warps=4, num_stages=1),
     ],
     key=['M', 'N', 'K'],
 )
@@ -55,56 +56,63 @@ def quantized_matmul_w4a16_kernel(
     BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
 ):
-    """W4A16 quantized matmul with L2 swizzle and autotune."""
+    """Persistent W4A16 matmul with two-level K tiling."""
     pid = tl.program_id(0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    num_tiles = num_pid_m * num_pid_n
+    num_groups = K // group_size
 
-    # L2 swizzle
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
-    group_id = pid // num_pid_in_group
-    first_pid_m = group_id * GROUP_SIZE_M
-    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
-    pid_n = (pid % num_pid_in_group) // group_size_m
+    for tile_id in range(pid, num_tiles, tl.num_programs(0)):
+        # L2 swizzle
+        num_pid_in_group = GROUP_SIZE_M * num_pid_n
+        group_id = tile_id // num_pid_in_group
+        first_pid_m = group_id * GROUP_SIZE_M
+        group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+        pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_size_m)
+        pid_n = (tile_id % num_pid_in_group) // group_size_m
 
-    offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-    offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+        offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        n_mask = offs_n < N
 
-    acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-    for k_start in range(0, K, BLOCK_SIZE_K):
-        offs_k = k_start + tl.arange(0, BLOCK_SIZE_K)
+        for g in range(0, num_groups):
+            # Load scales/zeros once per group — [BLOCK_SIZE_N]
+            s_ptrs = S_ptr + g * stride_skg + offs_n * stride_sn
+            z_ptrs = Z_ptr + g * stride_zkg + offs_n * stride_zn
+            scales = tl.load(s_ptrs, mask=n_mask, other=1.0)
+            zeros = tl.load(z_ptrs, mask=n_mask, other=0.0)
 
-        # Load activation tile
-        a_ptrs = A_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
-        a_mask = (offs_m[:, None] < M) & (offs_k[None, :] < K)
-        a = tl.load(a_ptrs, mask=a_mask, other=0.0)
+            group_k_start = g * group_size
 
-        # Unpack int4 weights
-        packed_k_idx = offs_k // 8
-        bit_shift = ((offs_k & 7) * 4).to(tl.int32)
+            for k_off in range(0, group_size, BLOCK_SIZE_K):
+                k_start = group_k_start + k_off
+                offs_k = k_start + tl.arange(0, BLOCK_SIZE_K)
 
-        qw_ptrs = QW_ptr + packed_k_idx[:, None] * stride_qwk + offs_n[None, :] * stride_qwn
-        qw_mask = (packed_k_idx[:, None] < (K // 8)) & (offs_n[None, :] < N)
-        qw_packed = tl.load(qw_ptrs, mask=qw_mask, other=0)
-        int4_vals = (qw_packed >> bit_shift[:, None]) & 0xF
+                # Load activation tile
+                a_ptrs = A_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+                a_mask = (offs_m[:, None] < M) & (offs_k[None, :] < K)
+                a = tl.load(a_ptrs, mask=a_mask, other=0.0)
 
-        # Per-group dequantize
-        group_idx = offs_k // group_size
-        s_ptrs = S_ptr + group_idx[:, None] * stride_skg + offs_n[None, :] * stride_sn
-        z_ptrs = Z_ptr + group_idx[:, None] * stride_zkg + offs_n[None, :] * stride_zn
-        s_mask = (group_idx[:, None] < (K // group_size)) & (offs_n[None, :] < N)
-        scales = tl.load(s_ptrs, mask=s_mask, other=1.0)
-        zeros = tl.load(z_ptrs, mask=s_mask, other=0.0)
+                # Unpack int4 from int32
+                packed_k_idx = offs_k // 8
+                bit_shift = ((offs_k & 7) * 4).to(tl.int32)
 
-        w_dequant = (int4_vals.to(a.dtype) - zeros) * scales
-        acc += tl.dot(a, w_dequant)
+                qw_ptrs = QW_ptr + packed_k_idx[:, None] * stride_qwk + offs_n[None, :] * stride_qwn
+                qw_mask = (packed_k_idx[:, None] < (K // 8)) & (offs_n[None, :] < N)
+                qw_packed = tl.load(qw_ptrs, mask=qw_mask, other=0)
+                int4_vals = (qw_packed >> bit_shift[:, None]) & 0xF
 
-    c = acc.to(C_ptr.dtype.element_ty)
-    c_ptrs = C_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
-    mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
-    tl.store(c_ptrs, c, mask=mask)
+                # Dequantize with hoisted scales/zeros
+                w_dequant = (int4_vals.to(a.dtype) - zeros[None, :]) * scales[None, :]
+                acc = tl.dot(a, w_dequant, acc)
+
+        c = acc.to(C_ptr.dtype.element_ty)
+        c_ptrs = C_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
+        mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
+        tl.store(c_ptrs, c, mask=mask)
 
 
 def kernel_fn(
@@ -121,7 +129,12 @@ def kernel_fn(
 
     C = torch.empty((M, N), device=activation.device, dtype=activation.dtype)
 
-    grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),)
+    def grid(META):
+        num_m = triton.cdiv(M, META['BLOCK_SIZE_M'])
+        num_n = triton.cdiv(N, META['BLOCK_SIZE_N'])
+        total = num_m * num_n
+        num_programs = min(total, 680)
+        return (num_programs,)
 
     quantized_matmul_w4a16_kernel[grid](
         activation, packed_weights, scales, zeros, C,
