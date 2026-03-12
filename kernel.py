@@ -56,12 +56,11 @@ def quantized_matmul_w4a16_kernel(
     BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
 ):
-    """Persistent W4A16 matmul with two-level K tiling."""
+    """Persistent W4A16 matmul with flat K loop."""
     pid = tl.program_id(0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     num_tiles = num_pid_m * num_pid_n
-    num_groups = K // group_size
 
     for tile_id in range(pid, num_tiles, tl.num_programs(0)):
         # L2 swizzle
@@ -77,37 +76,37 @@ def quantized_matmul_w4a16_kernel(
         n_mask = offs_n < N
 
         acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+        m_mask = offs_m < M
 
-        for g in range(0, num_groups):
-            # Load scales/zeros once per group — [BLOCK_SIZE_N]
+        num_k_steps = K // BLOCK_SIZE_K
+        for k_step in range(0, num_k_steps):
+            k_start = k_step * BLOCK_SIZE_K
+            offs_k = k_start + tl.arange(0, BLOCK_SIZE_K)
+
+            # Determine group index for this K block
+            g = k_start // group_size
+
+            # Load scales/zeros for this group — [BLOCK_SIZE_N]
             s_ptrs = S_ptr + g * stride_skg + offs_n * stride_sn
             z_ptrs = Z_ptr + g * stride_zkg + offs_n * stride_zn
             scales = tl.load(s_ptrs, mask=n_mask, other=1.0)
             zeros = tl.load(z_ptrs, mask=n_mask, other=0.0)
 
-            group_k_start = g * group_size
+            # Load activation tile
+            a_ptrs = A_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+            a = tl.load(a_ptrs, mask=m_mask[:, None], other=0.0)
 
-            for k_off in range(0, group_size, BLOCK_SIZE_K):
-                k_start = group_k_start + k_off
-                offs_k = k_start + tl.arange(0, BLOCK_SIZE_K)
+            # Unpack int4 from int32
+            packed_k_idx = offs_k // 8
+            bit_shift = ((offs_k & 7) * 4).to(tl.int32)
 
-                # Load activation tile
-                a_ptrs = A_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
-                a_mask = (offs_m[:, None] < M) & (offs_k[None, :] < K)
-                a = tl.load(a_ptrs, mask=a_mask, other=0.0)
+            qw_ptrs = QW_ptr + packed_k_idx[:, None] * stride_qwk + offs_n[None, :] * stride_qwn
+            qw_packed = tl.load(qw_ptrs, mask=n_mask[None, :], other=0)
+            int4_vals = (qw_packed >> bit_shift[:, None]) & 0xF
 
-                # Unpack int4 from int32
-                packed_k_idx = offs_k // 8
-                bit_shift = ((offs_k & 7) * 4).to(tl.int32)
-
-                qw_ptrs = QW_ptr + packed_k_idx[:, None] * stride_qwk + offs_n[None, :] * stride_qwn
-                qw_mask = (packed_k_idx[:, None] < (K // 8)) & (offs_n[None, :] < N)
-                qw_packed = tl.load(qw_ptrs, mask=qw_mask, other=0)
-                int4_vals = (qw_packed >> bit_shift[:, None]) & 0xF
-
-                # Dequantize with hoisted scales/zeros
-                w_dequant = (int4_vals.to(a.dtype) - zeros[None, :]) * scales[None, :]
-                acc = tl.dot(a, w_dequant, acc)
+            # Dequantize with hoisted scales/zeros
+            w_dequant = (int4_vals.to(a.dtype) - zeros[None, :]) * scales[None, :]
+            acc = tl.dot(a, w_dequant, acc)
 
         c = acc.to(C_ptr.dtype.element_ty)
         c_ptrs = C_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
