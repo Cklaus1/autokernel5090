@@ -65,7 +65,7 @@ def dequant_kernel(
     tl.store(w_ptrs, w_dequant, mask=k_mask[:, None] & n_mask[None, :])
 
 
-_buf = {}
+_wt_buf = {}
 
 
 def kernel_fn(
@@ -80,11 +80,11 @@ def kernel_fn(
     M, K = activation.shape
     N = packed_weights.shape[1]
 
-    # Dequantize into transposed layout [N, K] for F.linear
-    key = (K, N, activation.dtype)
-    if key not in _buf:
-        _buf[key] = torch.empty((N, K), device=activation.device, dtype=activation.dtype)
-    Wt = _buf[key]
+    # Pre-allocate weight buffer
+    wkey = (K, N, activation.dtype)
+    if wkey not in _wt_buf:
+        _wt_buf[wkey] = torch.empty((N, K), device=activation.device, dtype=activation.dtype)
+    Wt = _wt_buf[wkey]
 
     def dequant_grid(META):
         return (triton.cdiv(K, META['BLOCK_SIZE_K']), triton.cdiv(N, META['BLOCK_SIZE_N']))
@@ -95,7 +95,6 @@ def kernel_fn(
         packed_weights.stride(0), packed_weights.stride(1),
         scales.stride(0), scales.stride(1),
         zeros.stride(0), zeros.stride(1),
-        # Store transposed: K→stride_wn (column), N→stride_wk (row)
         1, K,
         QUANT_GROUP_SIZE=group_size,
     )
