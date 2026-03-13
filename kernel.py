@@ -86,13 +86,14 @@ def dequant_kernel(
 
 @triton.autotune(
     configs=[
-        # Top performers from tuning (256x128x32 is the sweet spot)
+        # BK=64 with L2 grouping sweep
+        triton.Config({'BM': 128, 'BN': 256, 'BK': 64, 'G': 32}, num_stages=3, num_warps=8),
+        triton.Config({'BM': 128, 'BN': 256, 'BK': 64, 'G': 16}, num_stages=3, num_warps=8),
+        triton.Config({'BM': 128, 'BN': 256, 'BK': 64, 'G': 8}, num_stages=3, num_warps=8),
+        # BK=64 stages=2 (lower shared mem, works everywhere)
+        triton.Config({'BM': 128, 'BN': 256, 'BK': 64, 'G': 8}, num_stages=2, num_warps=8),
+        # BK=32 fallbacks (smaller K dimensions)
         triton.Config({'BM': 256, 'BN': 128, 'BK': 32, 'G': 8}, num_stages=3, num_warps=8),
-        triton.Config({'BM': 256, 'BN': 128, 'BK': 32, 'G': 8}, num_stages=4, num_warps=8),
-        triton.Config({'BM': 128, 'BN': 256, 'BK': 32, 'G': 8}, num_stages=3, num_warps=8),
-        triton.Config({'BM': 128, 'BN': 256, 'BK': 32, 'G': 8}, num_stages=4, num_warps=8),
-        # Fallback for different shapes
-        triton.Config({'BM': 128, 'BN': 128, 'BK': 32, 'G': 8}, num_stages=4, num_warps=8),
         triton.Config({'BM': 128, 'BN': 128, 'BK': 64, 'G': 8}, num_stages=3, num_warps=8),
     ],
     key=['M', 'N', 'K'],
@@ -154,40 +155,16 @@ def matmul_fp16_dot(
 _wt_buf = {}
 _dequant_cache = {}
 _out_buf = {}
+_matmul_cache = {}
 
 
-def _run_dequant(packed_weights, scales, zeros, Wt, K, N, group_size):
-    """Run dequant kernel."""
-    def dequant_grid(META):
-        return (triton.cdiv(K, META['BLOCK_SIZE_K']), triton.cdiv(N, META['BLOCK_SIZE_N']))
-
-    dequant_kernel[dequant_grid](
-        packed_weights, scales, zeros, Wt,
-        K, N,
-        packed_weights.stride(0), packed_weights.stride(1),
-        scales.stride(0), scales.stride(1),
-        zeros.stride(0), zeros.stride(1),
-        Wt.stride(0), Wt.stride(1),
-        QUANT_GROUP_SIZE=group_size,
-    )
+def _dequant_grid(META):
+    return (triton.cdiv(META['K'], META['BLOCK_SIZE_K']),
+            triton.cdiv(META['N'], META['BLOCK_SIZE_N']))
 
 
-def _run_matmul(activation, weights, output, M, N, K):
-    """Run matmul kernel. Uses FP16-dot for FP16 inputs (2x throughput)."""
-    def matmul_grid(META):
-        return (triton.cdiv(M, META['BM']) * triton.cdiv(N, META['BN']),)
-
-    # FP16 inputs: use FP16 dot for 2x tensor core throughput
-    # BF16 inputs: use FP32 accumulation (BF16 out_dtype not supported in tl.dot)
-    use_fp16_dot = activation.dtype == torch.float16
-    matmul_fp16_dot[matmul_grid](
-        activation, weights, output,
-        M, N, K,
-        activation.stride(0), activation.stride(1),
-        weights.stride(0), weights.stride(1),
-        output.stride(0), output.stride(1),
-        USE_FP16_DOT=use_fp16_dot,
-    )
+def _matmul_grid(META):
+    return (triton.cdiv(META['M'], META['BM']) * triton.cdiv(META['N'], META['BN']),)
 
 
 def kernel_fn(
@@ -198,42 +175,52 @@ def kernel_fn(
     group_size: int = 128,
 ) -> torch.Tensor:
     """Entry point called by bench.py."""
-    assert activation.is_cuda
     M, K = activation.shape
     N = packed_weights.shape[1]
 
-    # Cache key: Python object ids (safe: tensors alive during do_bench) + shape
+    # Dequant with caching
     cache_key = (id(packed_weights), id(scales), id(zeros), K, N, activation.dtype)
 
     if cache_key not in _dequant_cache:
-        # Pre-allocate weight buffer (K x N layout for matmul)
         wkey = (K, N, activation.dtype)
         if wkey not in _wt_buf:
             _wt_buf[wkey] = torch.empty((K, N), device=activation.device, dtype=activation.dtype)
         W = _wt_buf[wkey]
-
-        _run_dequant(packed_weights, scales, zeros, W, K, N, group_size)
-
-        # Cache the result
+        dequant_kernel[_dequant_grid](
+            packed_weights, scales, zeros, W,
+            K, N,
+            packed_weights.stride(0), packed_weights.stride(1),
+            scales.stride(0), scales.stride(1),
+            zeros.stride(0), zeros.stride(1),
+            W.stride(0), W.stride(1),
+            QUANT_GROUP_SIZE=group_size,
+        )
         if len(_dequant_cache) > 16:
             _dequant_cache.clear()
         _dequant_cache[cache_key] = W
 
     W = _dequant_cache[cache_key]
 
-    # For small M, cuBLAS is faster than Triton matmul
+    # Small M: cuBLAS is faster
     if M <= 16:
-        # Need N×K layout for F.linear
         nk_key = (cache_key, 'Wt')
         if nk_key not in _dequant_cache:
             _dequant_cache[nk_key] = W.t().contiguous()
         return torch.nn.functional.linear(activation, _dequant_cache[nk_key])
 
-    # Pre-allocate output buffer
+    # Pre-allocate output
     okey = (M, N, activation.dtype)
     if okey not in _out_buf:
         _out_buf[okey] = torch.empty((M, N), device=activation.device, dtype=activation.dtype)
     output = _out_buf[okey]
 
-    _run_matmul(activation, W, output, M, N, K)
+    use_fp16_dot = activation.dtype == torch.float16
+    matmul_fp16_dot[_matmul_grid](
+        activation, W, output,
+        M, N, K,
+        activation.stride(0), activation.stride(1),
+        W.stride(0), W.stride(1),
+        output.stride(0), output.stride(1),
+        USE_FP16_DOT=use_fp16_dot,
+    )
     return output
