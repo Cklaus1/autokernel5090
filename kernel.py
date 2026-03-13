@@ -142,12 +142,17 @@ def _run_dequant(packed_weights, scales, zeros, K, N, dtype, device, group_size)
     return _dequant_cache[cache_key]
 
 
-def _get_wt(cache_key, W):
+_wt_cache = {}
+
+
+def _get_wt(W, key_id):
     """Get cached transposed weight for F.linear."""
-    nk_key = (cache_key, 'Wt')
-    if nk_key not in _dequant_cache:
-        _dequant_cache[nk_key] = W.t().contiguous()
-    return _dequant_cache[nk_key]
+    if key_id not in _wt_cache:
+        _wt_cache[key_id] = W.t().contiguous()
+        if len(_wt_cache) > 32:
+            _wt_cache.clear()
+            _wt_cache[key_id] = W.t().contiguous()
+    return _wt_cache[key_id]
 
 
 def kernel_fn(
@@ -185,11 +190,9 @@ def kernel_fn(
     W_down = _run_dequant(packed_w_down, scales_down, zeros_down, K_down_unpacked, N_down, x.dtype, x.device, group_size)
 
     # Step 2: Gate and Up projections via cuBLAS F.linear
-    # F.linear(x, W^T) = x @ W, so we need W transposed to [N_hidden, K_in]
-    ck_gate = (id(packed_w_gate), id(scales_gate), id(zeros_gate), K_in, N_hidden, x.dtype)
-    ck_up = (id(packed_w_up), id(scales_up), id(zeros_up), K_in, N_hidden, x.dtype)
-    Wt_gate = _get_wt(ck_gate, W_gate)  # [N_hidden, K_in]
-    Wt_up = _get_wt(ck_up, W_up)        # [N_hidden, K_in]
+    # W_gate is [K_in, N_hidden], F.linear needs [N_hidden, K_in]
+    Wt_gate = _get_wt(W_gate, id(packed_w_gate))  # [N_hidden, K_in]
+    Wt_up = _get_wt(W_up, id(packed_w_up))        # [N_hidden, K_in]
 
     gate = F.linear(x, Wt_gate)  # [M, N_hidden]
     up = F.linear(x, Wt_up)      # [M, N_hidden]
@@ -201,9 +204,8 @@ def kernel_fn(
     silu_mul_kernel[grid](gate, up, hidden, n_elements, BLOCK_SIZE=1024)
 
     # Step 4: Down projection via cuBLAS F.linear
-    # W_down is [N_hidden, K_in], transposed = [K_in, N_hidden]
-    ck_down = (id(packed_w_down), id(scales_down), id(zeros_down), K_down_unpacked, N_down, x.dtype)
-    Wt_down = _get_wt(ck_down, W_down)  # [K_in, N_hidden]
+    # W_down is [N_hidden, K_in], F.linear needs [K_in, N_hidden]
+    Wt_down = _get_wt(W_down, id(packed_w_down))  # [K_in, N_hidden]
     out = F.linear(hidden, Wt_down)  # [M, K_in]
 
     return out
