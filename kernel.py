@@ -184,11 +184,8 @@ def kernel_fn(
     gate = F.linear(x, W_gate.t().contiguous())  # [M, N_hidden]
     up = F.linear(x, W_up.t().contiguous())      # [M, N_hidden]
 
-    # Step 3: Fused SiLU(gate) * up via Triton pointwise kernel
-    hidden = torch.empty_like(gate)
-    n_elements = M * N_hidden
-    grid = (triton.cdiv(n_elements, 1024),)
-    silu_mul_kernel[grid](gate, up, hidden, n_elements, BLOCK_SIZE=1024)
+    # Step 3: SiLU(gate) * up via PyTorch (fuse later once correct)
+    hidden = torch.nn.functional.silu(gate) * up
 
     # Step 4: Down projection via cuBLAS
     # W_down is [N_hidden, K_in], need [K_in, N_hidden] for F.linear
