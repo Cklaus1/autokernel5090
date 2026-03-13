@@ -105,10 +105,10 @@ def matmul_fp16_dot(
     stride_cm, stride_cn,
     BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr, G: tl.constexpr,
     USE_FP16_DOT: tl.constexpr,
+    ALIGNED: tl.constexpr,
 ):
     """Matmul with optional FP16-accumulate for 2x tensor core throughput.
-    USE_FP16_DOT=True: each tl.dot uses FP16 output, accumulated into FP32.
-    USE_FP16_DOT=False: standard FP32 accumulation (for BF16 inputs)."""
+    ALIGNED=True: skip boundary checks when M,N,K are divisible by tile sizes."""
     pid = tl.program_id(0)
     num_m = tl.cdiv(M, BM)
     num_n = tl.cdiv(N, BN)
@@ -129,25 +129,43 @@ def matmul_fp16_dot(
 
     acc = tl.zeros((BM, BN), dtype=tl.float32)
 
-    for k in range(0, tl.cdiv(K, BK)):
-        a = tl.load(a_block_ptr, boundary_check=(0, 1))
-        b = tl.load(b_block_ptr, boundary_check=(0, 1))
-        if USE_FP16_DOT:
-            partial = tl.dot(a, b, out_dtype=tl.float16)
-            acc += partial.to(tl.float32)
-        else:
-            acc = tl.dot(a, b, acc)
-        a_block_ptr = tl.advance(a_block_ptr, (0, BK))
-        b_block_ptr = tl.advance(b_block_ptr, (BK, 0))
+    if ALIGNED:
+        for k in range(0, tl.cdiv(K, BK)):
+            a = tl.load(a_block_ptr)
+            b = tl.load(b_block_ptr)
+            if USE_FP16_DOT:
+                partial = tl.dot(a, b, out_dtype=tl.float16)
+                acc += partial.to(tl.float32)
+            else:
+                acc = tl.dot(a, b, acc)
+            a_block_ptr = tl.advance(a_block_ptr, (0, BK))
+            b_block_ptr = tl.advance(b_block_ptr, (BK, 0))
+    else:
+        for k in range(0, tl.cdiv(K, BK)):
+            a = tl.load(a_block_ptr, boundary_check=(0, 1))
+            b = tl.load(b_block_ptr, boundary_check=(0, 1))
+            if USE_FP16_DOT:
+                partial = tl.dot(a, b, out_dtype=tl.float16)
+                acc += partial.to(tl.float32)
+            else:
+                acc = tl.dot(a, b, acc)
+            a_block_ptr = tl.advance(a_block_ptr, (0, BK))
+            b_block_ptr = tl.advance(b_block_ptr, (BK, 0))
 
     c_block_ptr = tl.make_block_ptr(
         base=C, shape=(M, N), strides=(stride_cm, stride_cn),
         offsets=(pid_m * BM, pid_n * BN), block_shape=(BM, BN), order=(1, 0)
     )
-    if USE_FP16_DOT:
-        tl.store(c_block_ptr, acc.to(tl.float16), boundary_check=(0, 1))
+    if ALIGNED:
+        if USE_FP16_DOT:
+            tl.store(c_block_ptr, acc.to(tl.float16))
+        else:
+            tl.store(c_block_ptr, acc.to(tl.bfloat16))
     else:
-        tl.store(c_block_ptr, acc.to(tl.bfloat16), boundary_check=(0, 1))
+        if USE_FP16_DOT:
+            tl.store(c_block_ptr, acc.to(tl.float16), boundary_check=(0, 1))
+        else:
+            tl.store(c_block_ptr, acc.to(tl.bfloat16), boundary_check=(0, 1))
 
 
 _wt_buf = {}
@@ -213,6 +231,8 @@ def kernel_fn(
     output = _out_buf[okey]
 
     use_fp16_dot = activation.dtype == torch.float16
+    # Check alignment: M, N, K divisible by largest tile sizes (128, 256, 128)
+    aligned = (M % 128 == 0) and (N % 256 == 0) and (K % 128 == 0)
     matmul_fp16_dot[_matmul_grid](
         activation, W, output,
         M, N, K,
@@ -220,5 +240,6 @@ def kernel_fn(
         W.stride(0), W.stride(1),
         output.stride(0), output.stride(1),
         USE_FP16_DOT=use_fp16_dot,
+        ALIGNED=aligned,
     )
     return output
