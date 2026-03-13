@@ -86,16 +86,14 @@ def dequant_kernel(
 
 @triton.autotune(
     configs=[
+        # Top performers from tuning (256x128x32 is the sweet spot)
         triton.Config({'BM': 256, 'BN': 128, 'BK': 32, 'G': 8}, num_stages=3, num_warps=8),
         triton.Config({'BM': 256, 'BN': 128, 'BK': 32, 'G': 8}, num_stages=4, num_warps=8),
-        triton.Config({'BM': 256, 'BN': 128, 'BK': 32, 'G': 8}, num_stages=5, num_warps=8),
-        triton.Config({'BM': 256, 'BN': 128, 'BK': 32, 'G': 16}, num_stages=4, num_warps=8),
         triton.Config({'BM': 128, 'BN': 256, 'BK': 32, 'G': 8}, num_stages=3, num_warps=8),
         triton.Config({'BM': 128, 'BN': 256, 'BK': 32, 'G': 8}, num_stages=4, num_warps=8),
-        triton.Config({'BM': 128, 'BN': 256, 'BK': 32, 'G': 16}, num_stages=4, num_warps=8),
+        # Fallback for different shapes
         triton.Config({'BM': 128, 'BN': 128, 'BK': 32, 'G': 8}, num_stages=4, num_warps=8),
         triton.Config({'BM': 128, 'BN': 128, 'BK': 64, 'G': 8}, num_stages=3, num_warps=8),
-        triton.Config({'BM': 128, 'BN': 256, 'BK': 64, 'G': 8}, num_stages=3, num_warps=8),
     ],
     key=['M', 'N', 'K'],
 )
