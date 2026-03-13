@@ -118,28 +118,18 @@ def _dequant_grid(META):
 
 
 def _run_dequant(packed_weights, scales, zeros, K, N, dtype, device, group_size):
-    """Dequant with caching by tensor identity."""
-    cache_key = (id(packed_weights), id(scales), id(zeros), K, N, dtype)
-
-    if cache_key not in _dequant_cache:
-        wkey = (K, N, dtype)
-        if wkey not in _wt_buf:
-            _wt_buf[wkey] = torch.empty((K, N), device=device, dtype=dtype)
-        W = _wt_buf[wkey]
-        dequant_kernel[_dequant_grid](
-            packed_weights, scales, zeros, W,
-            K, N,
-            packed_weights.stride(0), packed_weights.stride(1),
-            scales.stride(0), scales.stride(1),
-            zeros.stride(0), zeros.stride(1),
-            W.stride(0), W.stride(1),
-            QUANT_GROUP_SIZE=group_size,
-        )
-        if len(_dequant_cache) > 32:
-            _dequant_cache.clear()
-        _dequant_cache[cache_key] = W
-
-    return _dequant_cache[cache_key]
+    """Dequant INT4 packed weights to FP16."""
+    W = torch.empty((K, N), device=device, dtype=dtype)
+    dequant_kernel[_dequant_grid](
+        packed_weights, scales, zeros, W,
+        K, N,
+        packed_weights.stride(0), packed_weights.stride(1),
+        scales.stride(0), scales.stride(1),
+        zeros.stride(0), zeros.stride(1),
+        W.stride(0), W.stride(1),
+        QUANT_GROUP_SIZE=group_size,
+    )
+    return W
 
 
 _wt_cache = {}
@@ -189,13 +179,10 @@ def kernel_fn(
     # down: [N_hidden, K_in]
     W_down = _run_dequant(packed_w_down, scales_down, zeros_down, K_down_unpacked, N_down, x.dtype, x.device, group_size)
 
-    # Step 2: Gate and Up projections via cuBLAS F.linear
-    # W_gate is [K_in, N_hidden], F.linear needs [N_hidden, K_in]
-    Wt_gate = _get_wt(W_gate, id(packed_w_gate))  # [N_hidden, K_in]
-    Wt_up = _get_wt(W_up, id(packed_w_up))        # [N_hidden, K_in]
-
-    gate = F.linear(x, Wt_gate)  # [M, N_hidden]
-    up = F.linear(x, Wt_up)      # [M, N_hidden]
+    # Step 2: Gate and Up projections via cuBLAS
+    # W_gate/W_up are [K_in, N_hidden], need [N_hidden, K_in] for F.linear
+    gate = F.linear(x, W_gate.t().contiguous())  # [M, N_hidden]
+    up = F.linear(x, W_up.t().contiguous())      # [M, N_hidden]
 
     # Step 3: Fused SiLU(gate) * up via Triton pointwise kernel
     hidden = torch.empty_like(gate)
@@ -203,9 +190,8 @@ def kernel_fn(
     grid = (triton.cdiv(n_elements, 1024),)
     silu_mul_kernel[grid](gate, up, hidden, n_elements, BLOCK_SIZE=1024)
 
-    # Step 4: Down projection via cuBLAS F.linear
-    # W_down is [N_hidden, K_in], F.linear needs [K_in, N_hidden]
-    Wt_down = _get_wt(W_down, id(packed_w_down))  # [K_in, N_hidden]
-    out = F.linear(hidden, Wt_down)  # [M, K_in]
+    # Step 4: Down projection via cuBLAS
+    # W_down is [N_hidden, K_in], need [K_in, N_hidden] for F.linear
+    out = F.linear(hidden, W_down.t().contiguous())  # [M, K_in]
 
     return out
