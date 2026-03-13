@@ -170,32 +170,40 @@ def kernel_fn(
     hidden = silu(gate) * up
     out  = hidden @ dequant(packed_w_down)
     """
-    M, K = x.shape
-    N = packed_w_gate.shape[1]
-    K_down = packed_w_down.shape[1]
+    M, K_in = x.shape
+    N_hidden = packed_w_gate.shape[1]  # intermediate/hidden size
+
+    # Down proj: packed_w_down is [N_hidden//8, K_in] -> unpacked [N_hidden, K_in]
+    K_down_unpacked = packed_w_down.shape[0] * 8  # = N_hidden
+    N_down = packed_w_down.shape[1]  # = K_in (output dim)
 
     # Step 1: Dequant all 3 weight matrices (cached after first call)
-    W_gate = _run_dequant(packed_w_gate, scales_gate, zeros_gate, K, N, x.dtype, x.device, group_size)
-    W_up = _run_dequant(packed_w_up, scales_up, zeros_up, K, N, x.dtype, x.device, group_size)
+    # gate/up: [K_in, N_hidden]
+    W_gate = _run_dequant(packed_w_gate, scales_gate, zeros_gate, K_in, N_hidden, x.dtype, x.device, group_size)
+    W_up = _run_dequant(packed_w_up, scales_up, zeros_up, K_in, N_hidden, x.dtype, x.device, group_size)
+    # down: [N_hidden, K_in]
+    W_down = _run_dequant(packed_w_down, scales_down, zeros_down, K_down_unpacked, N_down, x.dtype, x.device, group_size)
 
-    N_down_K = packed_w_down.shape[0] * 8  # packed K dimension for down proj
-    W_down = _run_dequant(packed_w_down, scales_down, zeros_down, N_down_K, K_down, x.dtype, x.device, group_size)
+    # Step 2: Gate and Up projections via cuBLAS F.linear
+    # F.linear(x, W^T) = x @ W, so we need W transposed to [N_hidden, K_in]
+    ck_gate = (id(packed_w_gate), id(scales_gate), id(zeros_gate), K_in, N_hidden, x.dtype)
+    ck_up = (id(packed_w_up), id(scales_up), id(zeros_up), K_in, N_hidden, x.dtype)
+    Wt_gate = _get_wt(ck_gate, W_gate)  # [N_hidden, K_in]
+    Wt_up = _get_wt(ck_up, W_up)        # [N_hidden, K_in]
 
-    # Step 2: Gate and Up projections via cuBLAS
-    Wt_gate = _get_wt((id(packed_w_gate), id(scales_gate), id(zeros_gate), K, N, x.dtype), W_gate)
-    Wt_up = _get_wt((id(packed_w_up), id(scales_up), id(zeros_up), K, N, x.dtype), W_up)
-
-    gate = F.linear(x, Wt_gate)  # [M, N]
-    up = F.linear(x, Wt_up)      # [M, N]
+    gate = F.linear(x, Wt_gate)  # [M, N_hidden]
+    up = F.linear(x, Wt_up)      # [M, N_hidden]
 
     # Step 3: Fused SiLU(gate) * up via Triton pointwise kernel
     hidden = torch.empty_like(gate)
-    n_elements = M * N
+    n_elements = M * N_hidden
     grid = (triton.cdiv(n_elements, 1024),)
     silu_mul_kernel[grid](gate, up, hidden, n_elements, BLOCK_SIZE=1024)
 
-    # Step 4: Down projection via cuBLAS
-    Wt_down = _get_wt((id(packed_w_down), id(scales_down), id(zeros_down), N_down_K, K_down, x.dtype), W_down)
-    out = F.linear(hidden, Wt_down)  # [M, K]
+    # Step 4: Down projection via cuBLAS F.linear
+    # W_down is [N_hidden, K_in], transposed = [K_in, N_hidden]
+    ck_down = (id(packed_w_down), id(scales_down), id(zeros_down), K_down_unpacked, N_down, x.dtype)
+    Wt_down = _get_wt(ck_down, W_down)  # [K_in, N_hidden]
+    out = F.linear(hidden, Wt_down)  # [M, K_in]
 
     return out
