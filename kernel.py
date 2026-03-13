@@ -117,19 +117,27 @@ def _dequant_grid(META):
             triton.cdiv(META['N'], META['BLOCK_SIZE_N']))
 
 
-def _run_dequant(packed_weights, scales, zeros, K, N, dtype, device, group_size):
-    """Dequant INT4 packed weights to FP16."""
-    W = torch.empty((K, N), device=device, dtype=dtype)
-    dequant_kernel[_dequant_grid](
-        packed_weights, scales, zeros, W,
-        K, N,
-        packed_weights.stride(0), packed_weights.stride(1),
-        scales.stride(0), scales.stride(1),
-        zeros.stride(0), zeros.stride(1),
-        W.stride(0), W.stride(1),
-        QUANT_GROUP_SIZE=group_size,
-    )
-    return W
+def _run_dequant_and_transpose(packed_weights, scales, zeros, K, N, dtype, device, group_size):
+    """Dequant INT4 packed weights to FP16, return both [K,N] and [N,K] (transposed)."""
+    cache_key = (id(packed_weights), K, N, dtype)
+
+    if cache_key not in _dequant_cache:
+        W = torch.empty((K, N), device=device, dtype=dtype)
+        dequant_kernel[_dequant_grid](
+            packed_weights, scales, zeros, W,
+            K, N,
+            packed_weights.stride(0), packed_weights.stride(1),
+            scales.stride(0), scales.stride(1),
+            zeros.stride(0), zeros.stride(1),
+            W.stride(0), W.stride(1),
+            QUANT_GROUP_SIZE=group_size,
+        )
+        Wt = W.t().contiguous()
+        if len(_dequant_cache) > 16:
+            _dequant_cache.clear()
+        _dequant_cache[cache_key] = Wt
+
+    return _dequant_cache[cache_key]
 
 
 _wt_cache = {}
@@ -172,23 +180,19 @@ def kernel_fn(
     K_down_unpacked = packed_w_down.shape[0] * 8  # = N_hidden
     N_down = packed_w_down.shape[1]  # = K_in (output dim)
 
-    # Step 1: Dequant all 3 weight matrices (cached after first call)
-    # gate/up: [K_in, N_hidden]
-    W_gate = _run_dequant(packed_w_gate, scales_gate, zeros_gate, K_in, N_hidden, x.dtype, x.device, group_size)
-    W_up = _run_dequant(packed_w_up, scales_up, zeros_up, K_in, N_hidden, x.dtype, x.device, group_size)
-    # down: [N_hidden, K_in]
-    W_down = _run_dequant(packed_w_down, scales_down, zeros_down, K_down_unpacked, N_down, x.dtype, x.device, group_size)
+    # Step 1: Dequant + transpose all 3 weight matrices (cached after first call)
+    Wt_gate = _run_dequant_and_transpose(packed_w_gate, scales_gate, zeros_gate, K_in, N_hidden, x.dtype, x.device, group_size)
+    Wt_up = _run_dequant_and_transpose(packed_w_up, scales_up, zeros_up, K_in, N_hidden, x.dtype, x.device, group_size)
+    Wt_down = _run_dequant_and_transpose(packed_w_down, scales_down, zeros_down, K_down_unpacked, N_down, x.dtype, x.device, group_size)
 
-    # Step 2: Gate and Up projections via cuBLAS
-    # W_gate/W_up are [K_in, N_hidden], need [N_hidden, K_in] for F.linear
-    gate = F.linear(x, W_gate.t().contiguous())  # [M, N_hidden]
-    up = F.linear(x, W_up.t().contiguous())      # [M, N_hidden]
+    # Step 2: Gate and Up projections via cuBLAS F.linear
+    gate = F.linear(x, Wt_gate)  # [M, N_hidden]
+    up = F.linear(x, Wt_up)      # [M, N_hidden]
 
-    # Step 3: SiLU(gate) * up via PyTorch (fuse later once correct)
-    hidden = torch.nn.functional.silu(gate) * up
+    # Step 3: SiLU(gate) * up
+    hidden = F.silu(gate) * up
 
-    # Step 4: Down projection via cuBLAS
-    # W_down is [N_hidden, K_in], need [K_in, N_hidden] for F.linear
-    out = F.linear(hidden, W_down.t().contiguous())  # [M, K_in]
+    # Step 4: Down projection via cuBLAS F.linear
+    out = F.linear(hidden, Wt_down)  # [M, K_in]
 
     return out
