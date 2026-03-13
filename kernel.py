@@ -86,13 +86,15 @@ def dequant_kernel(
 
 @triton.autotune(
     configs=[
-        # BK=64 with L2 grouping sweep
+        # BK=64 with L2 grouping sweep (current winners)
         triton.Config({'BM': 128, 'BN': 256, 'BK': 64, 'G': 32}, num_stages=3, num_warps=8),
         triton.Config({'BM': 128, 'BN': 256, 'BK': 64, 'G': 16}, num_stages=3, num_warps=8),
         triton.Config({'BM': 128, 'BN': 256, 'BK': 64, 'G': 8}, num_stages=3, num_warps=8),
-        # BK=64 stages=2 (lower shared mem, works everywhere)
         triton.Config({'BM': 128, 'BN': 256, 'BK': 64, 'G': 8}, num_stages=2, num_warps=8),
-        # BK=32 fallbacks (smaller K dimensions)
+        # BK=128 (Triton 3.6 may handle register pressure better)
+        triton.Config({'BM': 128, 'BN': 128, 'BK': 128, 'G': 8}, num_stages=2, num_warps=8),
+        triton.Config({'BM': 128, 'BN': 256, 'BK': 128, 'G': 8}, num_stages=2, num_warps=8),
+        # BK=32 fallbacks
         triton.Config({'BM': 256, 'BN': 128, 'BK': 32, 'G': 8}, num_stages=3, num_warps=8),
         triton.Config({'BM': 128, 'BN': 128, 'BK': 64, 'G': 8}, num_stages=3, num_warps=8),
     ],
