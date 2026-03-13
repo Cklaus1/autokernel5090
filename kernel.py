@@ -13,7 +13,6 @@ import triton
 import triton.language as tl
 
 
-
 @triton.autotune(
     configs=[
         triton.Config({'BLOCK_SIZE_K': 32, 'BLOCK_SIZE_N': 64}, num_warps=4, num_stages=2),
@@ -21,6 +20,11 @@ import triton.language as tl
         triton.Config({'BLOCK_SIZE_K': 32, 'BLOCK_SIZE_N': 256}, num_warps=8, num_stages=2),
         triton.Config({'BLOCK_SIZE_K': 64, 'BLOCK_SIZE_N': 64}, num_warps=4, num_stages=2),
         triton.Config({'BLOCK_SIZE_K': 64, 'BLOCK_SIZE_N': 128}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_SIZE_K': 128, 'BLOCK_SIZE_N': 128}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE_K': 128, 'BLOCK_SIZE_N': 256}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_K': 64, 'BLOCK_SIZE_N': 256}, num_warps=8, num_stages=4),
+        triton.Config({'BLOCK_SIZE_K': 32, 'BLOCK_SIZE_N': 512}, num_warps=8, num_stages=3),
+        triton.Config({'BLOCK_SIZE_K': 256, 'BLOCK_SIZE_N': 128}, num_warps=8, num_stages=3),
     ],
     key=['K', 'N'],
 )
@@ -36,7 +40,7 @@ def dequant_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     QUANT_GROUP_SIZE: tl.constexpr,
 ):
-    """Dequantize INT4 packed weights to FP16."""
+    """Dequantize INT4 packed weights to FP16 with optimizations."""
     pid_k = tl.program_id(0)
     pid_n = tl.program_id(1)
 
@@ -45,12 +49,24 @@ def dequant_kernel(
     k_mask = offs_k < K
     n_mask = offs_n < N
 
-    g = offs_k // QUANT_GROUP_SIZE
-
-    s_ptrs = S_ptr + g[:, None] * stride_skg + offs_n[None, :] * stride_sn
-    z_ptrs = Z_ptr + g[:, None] * stride_zkg + offs_n[None, :] * stride_zn
-    scales = tl.load(s_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=1.0)
-    zeros = tl.load(z_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
+    # Optimize for aligned blocks when BLOCK_SIZE_K == QUANT_GROUP_SIZE
+    if BLOCK_SIZE_K == QUANT_GROUP_SIZE:
+        # Single group per block - load scales/zeros once
+        g = pid_k
+        s_ptrs = S_ptr + g * stride_skg + offs_n * stride_sn
+        z_ptrs = Z_ptr + g * stride_zkg + offs_n * stride_zn
+        scales = tl.load(s_ptrs, mask=n_mask, other=1.0)
+        zeros = tl.load(z_ptrs, mask=n_mask, other=0.0)
+        
+        # Broadcast scales and zeros
+        scales = scales[None, :]
+        zeros = zeros[None, :]
+    else:
+        g = offs_k // QUANT_GROUP_SIZE
+        s_ptrs = S_ptr + g[:, None] * stride_skg + offs_n[None, :] * stride_sn
+        z_ptrs = Z_ptr + g[:, None] * stride_zkg + offs_n[None, :] * stride_zn
+        scales = tl.load(s_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=1.0)
+        zeros = tl.load(z_ptrs, mask=k_mask[:, None] & n_mask[None, :], other=0.0)
 
     packed_k_idx = offs_k // 8
     bit_shift = ((offs_k & 7) * 4).to(tl.int32)
