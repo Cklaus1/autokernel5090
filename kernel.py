@@ -215,11 +215,27 @@ def kernel_fn(
             _dequant_cache[fp8_key] = Wt.to(torch.float8_e4m3fn)
         W_fp8 = _dequant_cache[fp8_key]  # [N, K] in fp8
 
-        # Dynamic per-tensor activation quantization to FP8
-        A_fp8 = activation.to(torch.float8_e4m3fn)  # [M, K]
-        scale_a = torch.tensor(1.0, device=activation.device, dtype=torch.float32)
-        scale_b = torch.tensor(1.0, device=activation.device, dtype=torch.float32)
-        return torch._scaled_mm(A_fp8, W_fp8.t(), scale_a=scale_a, scale_b=scale_b, out_dtype=torch.float16)
+        # Dynamic per-tensor scaling for FP8
+        # FP8 e4m3 max value is 448. Scale to fit dynamic range.
+        a_amax = activation.abs().max()
+        w_amax_key = (cache_key, 'w_amax')
+        if w_amax_key not in _dequant_cache:
+            Wt = W.t().contiguous()
+            _dequant_cache[w_amax_key] = Wt.abs().max()
+        w_amax = _dequant_cache[w_amax_key]
+
+        fp8_max = 448.0
+        scale_a = (a_amax / fp8_max).float().clamp(min=1e-12)
+        scale_b = (w_amax / fp8_max).float().clamp(min=1e-12)
+
+        A_fp8 = (activation / scale_a).to(torch.float8_e4m3fn)
+        W_fp8_scaled = _dequant_cache.get((cache_key, 'fp8_Wt_scaled'))
+        if W_fp8_scaled is None:
+            Wt = W.t().contiguous()
+            W_fp8_scaled = (Wt / scale_b).to(torch.float8_e4m3fn)
+            _dequant_cache[(cache_key, 'fp8_Wt_scaled')] = W_fp8_scaled
+
+        return torch._scaled_mm(A_fp8, W_fp8_scaled.t(), scale_a=scale_a, scale_b=scale_b, out_dtype=torch.float16)
 
     # BF16 fallback: Triton matmul
     okey = (M, N, activation.dtype)
