@@ -85,7 +85,7 @@ def kernel_fn(
     B: [N, K] float16
     Returns: [M, N] float16
     """
-    b_key = id(B)
+    b_key = (id(B), B.shape, B.data_ptr())
     if b_key not in _b_cache:
         B_fp4, scale_b = _quantize_to_nvfp4(B, block_size=16)
         B_col = B_fp4.t()
