@@ -36,7 +36,7 @@ uv sync
 uv run prepare.py
 
 # Profile a model (ships with GPT-2, LLaMA, BERT -- no transformers needed)
-uv run profile.py --model models/llama_7b.py --class-name LlamaModel \
+uv run profiler.py --model models/llama_7b.py --class-name LlamaModel \
  --input-shape 1,512 --dtype float16
 
 # Extract top bottleneck kernels
@@ -65,14 +65,14 @@ The agent will:
 ## The Pipeline
 
 ```
-                 profile.py              extract.py           bench.py (loop)         verify.py
+                 profiler.py             extract.py           bench.py (loop)         verify.py
 Any PyTorch  ──>  Rank kernels  ──>  Generate baseline  ──>  Optimize each  ──>  End-to-end
    model          by GPU time       Triton kernels          kernel (agent)       verification
 ```
 
 | Tool | What it does |
 |------|-------------|
-| `profile.py` | Profiles any PyTorch model with `torch.profiler`, ranks kernels by GPU time, classifies as compute/memory-bound |
+| `profiler.py` | Profiles any PyTorch model with `torch.profiler`, ranks kernels by GPU time, classifies as compute/memory-bound |
 | `extract.py` | Extracts top-N bottleneck kernels from profiling results into standalone Triton kernel files |
 | `orchestrate.py` | Multi-kernel scheduler: decides which kernel to optimize next using Amdahl's law, tracks aggregate progress |
 | `bench.py` | Fixed benchmark: 5-stage correctness (smoke, shape sweep, numerical stability, determinism, edge cases) + performance + roofline |
@@ -111,7 +111,7 @@ Self-contained model definitions ship with AutoKernel (no `transformers` library
 For HuggingFace models (`uv sync --extra models`):
 
 ```bash
-uv run profile.py --module transformers --class-name AutoModelForCausalLM \
+uv run profiler.py --module transformers --class-name AutoModelForCausalLM \
  --pretrained meta-llama/Llama-2-7b-hf --input-shape 1,2048 --dtype float16
 ```
 
@@ -126,7 +126,7 @@ autokernel/
   reference.py          PyTorch reference implementations (ground truth)
   prepare.py            one-time setup: test data, baselines
 
-  profile.py            profile any PyTorch model, rank kernels by GPU time
+  profiler.py           profile any PyTorch model, rank kernels by GPU time
   extract.py            extract bottleneck kernels into workspace/
   orchestrate.py        multi-kernel scheduler (Amdahl's law)
   verify.py             end-to-end model verification + speedup report

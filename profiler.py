@@ -3,9 +3,9 @@
 AutoKernel Model Profiler -- Profile any PyTorch model to identify bottleneck kernels.
 
 Usage:
-    uv run profile.py --model models/llama_7b.py --class-name LlamaModel --input-shape 1,2048 --dtype float16
-    uv run profile.py --model models/gpt2.py --class-name GPT2 --input-shape 1,1024
-    uv run profile.py --module transformers --class-name AutoModelForCausalLM --pretrained meta-llama/Llama-2-7b-hf --input-shape 1,2048
+    uv run profiler.py --model models/llama_7b.py --class-name LlamaModel --input-shape 1,2048 --dtype float16
+    uv run profiler.py --model models/gpt2.py --class-name GPT2 --input-shape 1,1024
+    uv run profiler.py --module transformers --class-name AutoModelForCausalLM --pretrained meta-llama/Llama-2-7b-hf --input-shape 1,2048
 
 Output: profile_report.json in workspace/ directory
 """
@@ -753,12 +753,12 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  uv run profile.py --model models/llama_7b.py "
+            "  uv run profiler.py --model models/llama_7b.py "
             "--class-name LlamaModel --input-shape 1,2048 --dtype float16\n"
-            "  uv run profile.py --module transformers "
+            "  uv run profiler.py --module transformers "
             "--class-name AutoModelForCausalLM "
             "--pretrained meta-llama/Llama-2-7b-hf --input-shape 1,2048\n"
-            "  uv run profile.py --model my_net.py "
+            "  uv run profiler.py --model my_net.py "
             "--class-name MyNet --input-shape 8,3,224,224 --dtype float32\n"
         ),
     )

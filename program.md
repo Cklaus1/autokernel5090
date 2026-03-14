@@ -40,13 +40,13 @@ Record these details. You will use them throughout the run.
 Run profiling to identify where the model spends its time:
 
 ```bash
-uv run profile.py --model <path> --class-name <name> --input-shape <shape>
+uv run profiler.py --model <path> --class-name <name> --input-shape <shape>
 ```
 
 Or for HuggingFace models:
 
 ```bash
-uv run profile.py --module transformers --class-name AutoModelForCausalLM --pretrained <model_name> --input-shape <shape>
+uv run profiler.py --module transformers --class-name AutoModelForCausalLM --pretrained <model_name> --input-shape <shape>
 ```
 
 Read the output. The profiler reports:
@@ -754,7 +754,7 @@ These are hard rules. Violating any of them is a bug.
 2. **Never modify `reference.py`**. These are the correctness oracles.
 3. **Never modify `prepare.py`**. This handles one-time setup.
 4. **Never modify `verify.py`**. This is the end-to-end verification harness.
-5. **Never modify `profile.py`** or **`extract.py`**. These are the analysis tools.
+5. **Never modify `profiler.py`** or **`extract.py`**. These are the analysis tools.
 6. **Never modify `orchestrate.py`**. This is the orchestration engine.
 7. **Never add dependencies**. You can only use what is already in `pyproject.toml`.
 8. **Never skip correctness**. Every experiment must pass correctness checks.
@@ -776,7 +776,7 @@ These are hard rules. Violating any of them is a bug.
 Human: Optimize LLaMA 7B. Model at models/llama_7b.py, class LlamaModel.
        Input shape 1,2048, float16. Budget: 8 hours.
 
-Agent: [runs profile.py, presents bottleneck summary]
+Agent: [runs profiler.py, presents bottleneck summary]
        Top 3: matmul (62%), attention (18%), rmsnorm (9%)
        Plan: matmul ~4h, attention ~2.5h, rmsnorm ~1.5h
        Estimated max end-to-end speedup: 1.7-1.8x
