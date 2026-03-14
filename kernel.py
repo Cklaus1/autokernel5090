@@ -21,21 +21,38 @@ from torch.utils.cpp_extension import load as _load_ext
 _b_cache = {}
 _scale_buf = {}
 
-# JIT-compile the CUDA quantization kernel
-_CUDA_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nvfp4", "quantize_cuda.cu")
-if not os.path.exists(_CUDA_SRC):
-    _CUDA_SRC = "/tmp/nvfp4_quant_cuda.cu"  # fallback
+# JIT-compile the CUDA quantization kernel (v2: fused FP8 scale padding)
+_CUDA_SRC_V2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nvfp4", "quantize_cuda_v2.cu")
+_CUDA_SRC_V1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nvfp4", "quantize_cuda.cu")
+if not os.path.exists(_CUDA_SRC_V2):
+    _CUDA_SRC_V2 = None
 
 _nvfp4_cuda = None
+_nvfp4_version = 0
 
 def _get_cuda_quant():
-    global _nvfp4_cuda
+    global _nvfp4_cuda, _nvfp4_version
     if _nvfp4_cuda is None:
+        # Try v2 first (fused FP8 scale padding)
+        if _CUDA_SRC_V2 is not None:
+            try:
+                _nvfp4_cuda = _load_ext(
+                    'nvfp4_quant_v2', sources=[_CUDA_SRC_V2],
+                    extra_cuda_cflags=['-O3', '--use_fast_math', '-arch=sm_80'],
+                    verbose=False,
+                )
+                _nvfp4_version = 2
+                return _nvfp4_cuda
+            except Exception:
+                pass
+        # Fall back to v1
+        src = _CUDA_SRC_V1 if os.path.exists(_CUDA_SRC_V1) else "/tmp/nvfp4_quant_cuda.cu"
         _nvfp4_cuda = _load_ext(
-            'nvfp4_quant', sources=[_CUDA_SRC],
+            'nvfp4_quant', sources=[src],
             extra_cuda_cflags=['-O3', '--use_fast_math', '-arch=sm_80'],
             verbose=False,
         )
+        _nvfp4_version = 1
     return _nvfp4_cuda
 
 
@@ -43,23 +60,29 @@ def _quantize_to_nvfp4_cuda(x_fp16: torch.Tensor, block_size: int = 16):
     """Quantize FP16 tensor to NVFP4 via fused CUDA kernel."""
     M, K = x_fp16.shape
     cuda_mod = _get_cuda_quant()
-    packed, scales_fp16 = cuda_mod.quantize_nvfp4(x_fp16)
-
     num_blocks = K // block_size
     padded_num_blocks = math.ceil(num_blocks / 4) * 4
     padded_M = math.ceil(M / 128) * 128
 
-    buf_key = (padded_M, padded_num_blocks, x_fp16.device)
-    if buf_key not in _scale_buf:
-        _scale_buf[buf_key] = torch.zeros(padded_M, padded_num_blocks,
-                                           device=x_fp16.device, dtype=torch.float32)
-    scales_padded = _scale_buf[buf_key]
-    scales_padded.zero_()
-    scales_padded[:M, :num_blocks] = scales_fp16.float()
-    scales_flat = scales_padded.reshape(-1).to(torch.float8_e4m3fn)
-
-    x_fp4 = packed.view(torch.float4_e2m1fn_x2)
-    return x_fp4, scales_flat
+    if _nvfp4_version == 2:
+        # v2: outputs pre-padded FP8 scales directly
+        packed, scales_uint8 = cuda_mod.quantize_nvfp4(x_fp16, padded_M, padded_num_blocks)
+        x_fp4 = packed.view(torch.float4_e2m1fn_x2)
+        scales_flat = scales_uint8.view(torch.float8_e4m3fn)
+        return x_fp4, scales_flat
+    else:
+        # v1: needs Python-side scale padding
+        packed, scales_fp16 = cuda_mod.quantize_nvfp4(x_fp16)
+        buf_key = (padded_M, padded_num_blocks, x_fp16.device)
+        if buf_key not in _scale_buf:
+            _scale_buf[buf_key] = torch.zeros(padded_M, padded_num_blocks,
+                                               device=x_fp16.device, dtype=torch.float32)
+        scales_padded = _scale_buf[buf_key]
+        scales_padded.zero_()
+        scales_padded[:M, :num_blocks] = scales_fp16.float()
+        scales_flat = scales_padded.reshape(-1).to(torch.float8_e4m3fn)
+        x_fp4 = packed.view(torch.float4_e2m1fn_x2)
+        return x_fp4, scales_flat
 
 
 # Fallback: Python searchsorted (used if CUDA kernel fails to compile)
