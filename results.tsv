@@ -55,3 +55,6 @@ experiment	tag	kernel_type	throughput_tflops	latency_us	pct_peak	speedup_vs_pyto
 17	torch_compile_decode	nvfp4_matmul	0	134	0	0.06	REVERT	0	REVERT: torch.compile 17x slower for single-layer M=1 decode
 18	w4a16_vs_nvfp4_35b	model_benchmark	0	0	0	0	PASS	0	35B model: NVFP4 100tok/s vs W4A16 39tok/s decode (2.5x), prefill 37x
 19	eagle3_kv_fix	nvfp4_matmul	0	0	0	0	FAIL	31955	Fixed 3 vLLM bugs. Eagle3 loads but MoE autotuner takes 55+ min then hangs. Speculative decoding impractical for MoE hybrid models on vLLM 0.17.1
+20	vllm_serve_openai	model_benchmark	119.3	1350	0	115	PASS	26000	vLLM OpenAI API server: 105-119 tok/s steady-state coding tasks
+21	continuous_batching	model_benchmark	56.5	13720	0	0	PASS	26000	Batch throughput: 1x=101, 2x=40, 4x=36, 8x=57 tok/s total
+22	eagle3_inference	nvfp4_matmul	0	0	0	0	FAIL	31955	Eagle3 loads (161s) but hangs on first generate. Mamba inference broken.
