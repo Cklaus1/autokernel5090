@@ -7,7 +7,7 @@ Secondary: correctness must ALWAYS pass
 
 Weight-stationary design:
   - B (weights) pre-quantized to FP4 and cached by tensor identity
-  - A (activations) quantized on-the-fly via threshold-based encoding
+  - A (activations) quantized on-the-fly via vectorized thresholds
   - cuBLASLt blockscaled MMA at ~1271 TFLOPS on RTX 5090
 """
 
@@ -17,6 +17,19 @@ import math
 import torch
 
 _b_cache = {}
+_scale_buf = {}
+
+# Pre-computed threshold tensor for bucket quantization
+_THRESHOLDS = None
+
+
+def _get_thresholds(device):
+    global _THRESHOLDS
+    if _THRESHOLDS is None or _THRESHOLDS.device != device:
+        # Midpoints between e2m1 values: 0, 0.5, 1, 1.5, 2, 3, 4, 6
+        _THRESHOLDS = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.50, 3.50, 5.00],
+                                    device=device, dtype=torch.float32)
+    return _THRESHOLDS
 
 
 def _quantize_to_nvfp4(x_fp16: torch.Tensor, block_size: int = 16):
@@ -30,29 +43,28 @@ def _quantize_to_nvfp4(x_fp16: torch.Tensor, block_size: int = 16):
     scales_fp32 = (block_max / 6.0).clamp(min=1e-12)
     x_scaled = x_blocks / scales_fp32.unsqueeze(-1)
 
-    # Threshold-based quantization (no searchsorted/argmin, much faster)
+    # Vectorized bucket quantization via searchsorted (7 thresholds)
+    thresholds = _get_thresholds(x.device)
     x_flat = x_scaled.reshape(-1)
-    x_sign = x_flat.sign()
     x_abs = x_flat.abs()
+    # searchsorted returns bucket index (0-7)
+    code = torch.searchsorted(thresholds, x_abs).to(torch.uint8)
+    code = code | ((x_flat < 0).to(torch.uint8) << 3)
 
-    code = torch.zeros_like(x_abs, dtype=torch.uint8)
-    code = torch.where(x_abs >= 0.25, torch.ones_like(code), code)
-    code = torch.where(x_abs >= 0.75, torch.full_like(code, 2), code)
-    code = torch.where(x_abs >= 1.25, torch.full_like(code, 3), code)
-    code = torch.where(x_abs >= 1.75, torch.full_like(code, 4), code)
-    code = torch.where(x_abs >= 2.50, torch.full_like(code, 5), code)
-    code = torch.where(x_abs >= 3.50, torch.full_like(code, 6), code)
-    code = torch.where(x_abs >= 5.00, torch.full_like(code, 7), code)
-    code = code | ((x_sign < 0).to(torch.uint8) << 3)
-
+    # Pack two FP4 values per byte
     code = code.reshape(-1, 2)
     packed = (code[:, 1] << 4) | code[:, 0]
     packed = packed.reshape(M, K // 2)
 
+    # Pad scales for cuBLAS block-scaled layout
     padded_num_blocks = math.ceil(num_blocks / 4) * 4
     padded_M = math.ceil(M / 128) * 128
-
-    scales_padded = torch.zeros(padded_M, padded_num_blocks, device=x.device, dtype=torch.float32)
+    buf_key = (padded_M, padded_num_blocks, x.device)
+    if buf_key not in _scale_buf:
+        _scale_buf[buf_key] = torch.zeros(padded_M, padded_num_blocks,
+                                           device=x.device, dtype=torch.float32)
+    scales_padded = _scale_buf[buf_key]
+    scales_padded.zero_()
     scales_padded[:M, :num_blocks] = scales_fp32
     scales_flat = scales_padded.reshape(-1).to(torch.float8_e4m3fn)
 
