@@ -159,3 +159,12 @@ def dequantize_fused_gemm_ref(
     gate_out = F.silu(gate_out)
     hidden = gate_out * up_out
     return quantized_matmul_w4a16_ref(hidden, packed_w_down, scales_down, zeros_down, group_size)
+
+
+# NVFP4 Matmul (native FP4 tensor cores on SM120+)
+def nvfp4_matmul_ref(
+    A: torch.Tensor,
+    B: torch.Tensor,
+) -> torch.Tensor:
+    """NVFP4 matmul reference: C = A @ B.T in FP16."""
+    return torch.mm(A, B.t())

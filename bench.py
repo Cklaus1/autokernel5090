@@ -278,6 +278,14 @@ def gen_quantized_matmul_w4a16_inputs(size: dict, dtype: torch.dtype, device: st
     }
 
 
+def gen_nvfp4_matmul_inputs(size: dict, dtype: torch.dtype, device: str, seed: int = 42) -> dict:
+    torch.manual_seed(seed)
+    M, N, K = size["M"], size["N"], size["K"]
+    A = torch.randn(M, K, device=device, dtype=dtype)
+    B = torch.randn(N, K, device=device, dtype=dtype)
+    return {"A": A, "B": B}
+
+
 def gen_dequantize_fused_gemm_inputs(size: dict, dtype: torch.dtype, device: str, seed: int = 42) -> dict:
     torch.manual_seed(seed)
     batch, dim, hidden = size["batch"], size["dim"], size["hidden"]
@@ -351,6 +359,10 @@ def _ref_quantized_matmul_w4a16(inputs: dict) -> torch.Tensor:
         inputs["activation"], inputs["packed_weights"],
         inputs["scales"], inputs["zeros"], inputs["group_size"],
     )
+
+def _ref_nvfp4_matmul(inputs: dict) -> torch.Tensor:
+    import reference
+    return reference.nvfp4_matmul_ref(inputs["A"], inputs["B"])
 
 def _ref_dequantize_fused_gemm(inputs: dict) -> torch.Tensor:
     import reference
@@ -676,6 +688,35 @@ KERNEL_CONFIGS: Dict[str, Dict[str, Any]] = {
             ("edge_1023", {"M": 1023, "N": 5120, "K": 5120, "group_size": 128}),
             ("edge_1",    {"M": 1,    "N": 5120, "K": 5120, "group_size": 128}),
         ],
+    },
+
+    # -----------------------------------------------------------------
+    # NVFP4 MATMUL (native FP4 tensor cores on SM120+)
+    # -----------------------------------------------------------------
+    "nvfp4_matmul": {
+        "test_sizes": [
+            ("small",           {"M": 256,  "N": 256,   "K": 256}),
+            ("medium",          {"M": 1024, "N": 1024,  "K": 1024}),
+            ("large",           {"M": 2048, "N": 5120,  "K": 5120}),
+            ("xlarge",          {"M": 4096, "N": 4096,  "K": 4096}),
+            ("qwen35_qkv",      {"M": 2048, "N": 3584,  "K": 3584}),
+            ("qwen35_mlp_gate", {"M": 2048, "N": 18944, "K": 3584}),
+            ("qwen7b_gate",     {"M": 2048, "N": 18944, "K": 3584}),
+            ("decode_128",      {"M": 128,  "N": 5120,  "K": 5120}),
+        ],
+        "test_dtypes": [torch.float16],
+        "tolerances": {
+            torch.float16:  {"atol": 250.0, "rtol": 5.0},
+        },
+        "flops_fn": lambda s: 2 * s["M"] * s["N"] * s["K"],
+        "bytes_fn": lambda s, dt: (
+            s["M"] * s["K"] // 2 + s["N"] * s["K"] // 2 +
+            s["M"] * s["K"] // 16 + s["N"] * s["K"] // 16 +
+            s["M"] * s["N"] * _dtype_bytes(dt)
+        ),
+        "input_generator": gen_nvfp4_matmul_inputs,
+        "reference_fn": _ref_nvfp4_matmul,
+        "edge_sizes": [],
     },
 
     # -----------------------------------------------------------------
