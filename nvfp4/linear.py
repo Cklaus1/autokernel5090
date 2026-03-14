@@ -14,7 +14,7 @@ Memory model:
 import torch
 import torch.nn as nn
 
-from .quantize import quantize_to_nvfp4, dequantize_nvfp4
+from .quantize import quantize_to_nvfp4, quantize_to_nvfp4_fast, dequantize_nvfp4
 
 
 class NVFP4Linear(nn.Module):
@@ -45,7 +45,7 @@ class NVFP4Linear(nn.Module):
 
         mod = cls(N, K, linear.bias is not None, cache_fp16=cache_fp16)
         w_gpu = w.cuda().half()
-        w_fp4, w_scale = quantize_to_nvfp4(w_gpu, block_size=16)
+        w_fp4, w_scale = quantize_to_nvfp4_fast(w_gpu, block_size=16)
         mod.w_fp4 = w_fp4
         mod.w_scale = w_scale
 
@@ -74,7 +74,7 @@ class NVFP4Linear(nn.Module):
             out = torch.nn.functional.linear(x, self._get_fp16_weights())
         else:
             # Large M: NVFP4 tensor cores (~1271 TFLOPS)
-            a_fp4, a_scale = quantize_to_nvfp4(x, block_size=16)
+            a_fp4, a_scale = quantize_to_nvfp4_fast(x, block_size=16)
             out = torch._scaled_mm(
                 a_fp4,
                 self.w_fp4.t(),

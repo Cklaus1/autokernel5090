@@ -10,7 +10,9 @@ Requirements:
 """
 
 import math
+import os
 import torch
+from torch.utils.cpp_extension import load as _load_ext
 
 
 def quantize_to_nvfp4(x_fp16: torch.Tensor, block_size: int = 16):
@@ -74,6 +76,107 @@ def quantize_to_nvfp4(x_fp16: torch.Tensor, block_size: int = 16):
 
     x_fp4 = packed.contiguous().view(torch.float4_e2m1fn_x2)
     return x_fp4, scales_flat
+
+
+# ---------------------------------------------------------------------------
+# Fast CUDA quantization backend (v3 > v2 > v1 > Python fallback)
+# ---------------------------------------------------------------------------
+_nvfp4_dir = os.path.dirname(os.path.abspath(__file__))
+_CUDA_SRC_V3 = os.path.join(_nvfp4_dir, "quantize_cuda_v3.cu")
+_CUDA_SRC_V2 = os.path.join(_nvfp4_dir, "quantize_cuda_v2.cu")
+_CUDA_SRC_V1 = os.path.join(_nvfp4_dir, "quantize_cuda.cu")
+
+_cuda_mod = None
+_cuda_version = 0  # 0 = not loaded, 1 = v1, 2 = v2/v3 (same API)
+_scale_buf = {}
+
+
+def _load_cuda_quant():
+    """JIT-compile the fastest available CUDA quantization kernel."""
+    global _cuda_mod, _cuda_version
+    if _cuda_mod is not None:
+        return _cuda_mod
+
+    _cflags = ['-O3', '--use_fast_math', '-arch=sm_80']
+
+    # Try v3 (vectorized half2 + manual FP8, fastest)
+    if os.path.exists(_CUDA_SRC_V3):
+        try:
+            _cuda_mod = _load_ext('nvfp4_quant_v3', sources=[_CUDA_SRC_V3],
+                                  extra_cuda_cflags=_cflags, verbose=False)
+            _cuda_version = 2  # same API as v2
+            return _cuda_mod
+        except Exception:
+            pass
+
+    # Try v2 (fused FP8 scales via __nv_fp8_e4m3)
+    if os.path.exists(_CUDA_SRC_V2):
+        try:
+            _cuda_mod = _load_ext('nvfp4_quant_v2', sources=[_CUDA_SRC_V2],
+                                  extra_cuda_cflags=_cflags, verbose=False)
+            _cuda_version = 2
+            return _cuda_mod
+        except Exception:
+            pass
+
+    # Try v1 (FP16 scales, needs Python-side padding)
+    if os.path.exists(_CUDA_SRC_V1):
+        try:
+            _cuda_mod = _load_ext('nvfp4_quant', sources=[_CUDA_SRC_V1],
+                                  extra_cuda_cflags=_cflags, verbose=False)
+            _cuda_version = 1
+            return _cuda_mod
+        except Exception:
+            pass
+
+    return None
+
+
+def quantize_to_nvfp4_fast(x_fp16: torch.Tensor, block_size: int = 16):
+    """Quantize FP16 tensor to NVFP4 using the fastest available backend.
+
+    Tries CUDA kernels (v3 → v2 → v1), falls back to Python searchsorted.
+    CUDA v3 is ~15x faster than Python (24µs vs 358µs for 2048x5120).
+
+    Args:
+        x_fp16: [M, K] float16 tensor on CUDA
+        block_size: elements per scale block (16 for HW path)
+
+    Returns:
+        x_fp4: [M, K//2] float4_e2m1fn_x2
+        scales: flat float8_e4m3fn scale tensor, padded per cuBLAS layout
+    """
+    M, K = x_fp16.shape
+    num_blocks = K // block_size
+    padded_num_blocks = math.ceil(num_blocks / 4) * 4
+    padded_M = math.ceil(M / 128) * 128
+
+    cuda_mod = _load_cuda_quant()
+    if cuda_mod is not None:
+        if _cuda_version == 2:
+            # v2/v3: outputs pre-padded FP8 scales directly
+            packed, scales_uint8 = cuda_mod.quantize_nvfp4(
+                x_fp16, padded_M, padded_num_blocks)
+            x_fp4 = packed.view(torch.float4_e2m1fn_x2)
+            scales_flat = scales_uint8.view(torch.float8_e4m3fn)
+            return x_fp4, scales_flat
+        else:
+            # v1: FP16 scales, needs Python-side padding
+            packed, scales_fp16 = cuda_mod.quantize_nvfp4(x_fp16)
+            buf_key = (padded_M, padded_num_blocks, x_fp16.device)
+            if buf_key not in _scale_buf:
+                _scale_buf[buf_key] = torch.zeros(
+                    padded_M, padded_num_blocks,
+                    device=x_fp16.device, dtype=torch.float32)
+            scales_padded = _scale_buf[buf_key]
+            scales_padded.zero_()
+            scales_padded[:M, :num_blocks] = scales_fp16.float()
+            scales_flat = scales_padded.reshape(-1).to(torch.float8_e4m3fn)
+            x_fp4 = packed.view(torch.float4_e2m1fn_x2)
+            return x_fp4, scales_flat
+
+    # Fallback: Python searchsorted
+    return quantize_to_nvfp4(x_fp16, block_size)
 
 
 def dequantize_nvfp4(

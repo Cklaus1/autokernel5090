@@ -8,12 +8,13 @@ Provides:
   - convert_model: convert all Linear layers in a model to NVFP4
 """
 
-from .quantize import quantize_to_nvfp4, dequantize_nvfp4
+from .quantize import quantize_to_nvfp4, quantize_to_nvfp4_fast, dequantize_nvfp4
 from .gemm import nvfp4_gemm, nvfp4_gemm_prequantized
 from .linear import NVFP4Linear, convert_model
 
 __all__ = [
     "quantize_to_nvfp4",
+    "quantize_to_nvfp4_fast",
     "dequantize_nvfp4",
     "nvfp4_gemm",
     "nvfp4_gemm_prequantized",
