@@ -18,41 +18,47 @@ All experiments for the W4A16 quantized matmul kernel on RTX 5090 (Blackwell, 17
 | 61 | dequant_flinear | 196.1 | 3.04x | Transposed dequant + F.linear (NT cuBLAS gemm) | KEEP (+7.9) |
 | 62 | aligned_blocks | 196.6 | 2.98x | Optimize for BLOCK_SIZE_K==group_size alignment | KEEP (+0.5) |
 | 63 | more_configs | 197.9 | 2.95x | Expanded autotune configs with larger blocks | KEEP (+1.3) |
+| 74 | dequant_caching | 215.0 | 3.26x | Dequant weight caching by tensor identity | KEEP (+17.1) |
+| 75 | fp16_accum | 290.0 | 4.40x | FP16-accumulate Triton matmul (out_dtype=fp16) | KEEP (+75) |
+| 76 | trim_configs | 290.0 | 4.40x | Trim autotune configs to top performers | KEEP |
+| 77 | persistent_matmul | 278.0 | 4.24x | Persistent matmul kernel 680 programs | REVERT (-12) |
+| 78 | pure_fp16_acc | FAIL | — | Pure FP16 accumulator (compile error) | REVERT |
+| 79 | expanded_configs | 285.0 | 4.33x | Expanded autotune for non-square shapes | REVERT (-5) |
+| 80 | imprecise_acc | 218.7 | 3.34x | max_num_imprecise_acc=BK | REVERT (-71) |
+| 81 | cublas_all_m | 218.2 | 3.27x | cuBLAS F.linear for all M sizes | REVERT (-72) |
+| 82 | bk128_triton36 | 327.0 | 4.89x | BK=128 configs + Triton 3.6.0 upgrade | KEEP (+37) |
+| 83-88 | various | ~322 | ~4.9x | stages=3, dot_scaled, warps=16, ieee precision | REVERT (noise) |
+| 89 | aligned_nocheck | 328.9 | 4.93x | ALIGNED flag skips boundary checks | KEEP |
+| 90-97 | various | ~322 | ~4.9x | cuBLAS thresholds, hardcoded configs, BK=64 stages=4 | REVERT |
+| 96 | clean_4config | 328.0 | 4.93x | Clean 4-config autotune, BK=128 focus (final) | KEEP |
 
-Fused GEMM kernel (dequantize_fused_gemm) experiments:
+## Other Kernel Types
 
-| Exp | Tag | TFLOPS | Speedup | What Was Tried | Result |
-|-----|-----|--------|---------|---------------|--------|
-| 0 | baseline | 16.3 | 0.25x | Baseline 32x32x32 fused dequant+SwiGLU kernel | FAIL (correctness) |
-| 1 | autotune | 24.4 | 0.38x | Added autotune configs for fused kernel | FAIL (correctness) |
+| Kernel | TFLOPS | vs PyTorch | Status |
+|--------|--------|-----------|--------|
+| Flash attention (long seq) | 399 | 22.6x | Correct, autotuned |
+| Fused SwiGLU MLP (3 matmuls) | 213 | 3.3x | First correct implementation |
+| FP8 scaled_mm (fails correctness) | 385 | 5.9x | FP8 precision limit |
+| NVFP4 native (torch._scaled_mm_v2) | 1,271 | 5.8x vs cuBLAS | Correct, production-viable |
 
 ## Top 5 Biggest Impact Changes
 
 1. **Autotune + L2 swizzle** (exp 0 to 21): +121.7 TFLOPS (15.1 to 136.8). Replacing naive 32x32x32 with 22 autotuned configs and L2 cache-friendly tile ordering delivered a 9x throughput jump -- the single largest gain.
 
-2. **Flat K loop** (exp 34 to 36): +14.7 TFLOPS (155.7 to 170.4). Removing the nested group loop and flattening to a single K-dimension loop let Triton's software pipelining overlap loads across iterations.
+2. **FP16 accumulation** (exp 74 to 75): +75 TFLOPS (215 to 290). Using `tl.dot(a, b, out_dtype=tl.float16)` doubled tensor core throughput on Blackwell SM120.
 
-3. **Split dequant + cuBLAS** (exp 39 to 60): +10.7 TFLOPS (177.5 to 188.2). The paradigm shift: stop trying to fuse dequant with matmul. Separate Triton dequant (53 us) plus cuBLAS FP16 matmul (500 us) beat the best fused kernel.
+3. **BK=128 + Triton 3.6.0** (exp 76 to 82): +37 TFLOPS (290 to 327). Triton 3.6.0's improved shared memory allocation allowed BK=128 tiles that were blocked by SM120's 101KB limit on 3.5.1.
 
-4. **Persistent kernel** (exp 29 to 32): +9.5 TFLOPS (143.9 to 153.4). Launching exactly 680 thread blocks (4x SM count) and looping over tiles amortized launch overhead and improved L2 reuse.
+4. **Flat K loop** (exp 34 to 36): +14.7 TFLOPS (155.7 to 170.4). Removing the nested group loop let Triton's software pipelining overlap loads across iterations.
 
-5. **Transposed dequant + F.linear** (exp 60 to 61): +7.9 TFLOPS (188.2 to 196.1). Storing dequanted weights as [N,K] and using F.linear (NT GEMM) instead of torch.mm (NN GEMM) gave a 4% boost from better cuBLAS layout preference.
-
-## Top 3 Most Interesting Insights
-
-1. **Don't compete with cuBLAS.** The fused Triton kernel plateaued at 177.5 TFLOPS. Splitting dequant and matmul, letting cuBLAS handle the dense FP16 multiply, immediately jumped to 188.2 TFLOPS. cuBLAS uses SASS-level optimization, TMA loads, and warp specialization that Triton cannot match for pure dense matmul.
-
-2. **Flat loops beat "smarter" nested loops.** A two-level K loop that hoisted invariant scale/zero loads was algorithmically superior, but the flat K loop won because Triton's compiler can only pipeline a single loop. Compiler-friendliness trumps algorithmic cleverness.
-
-3. **W4A16 quantization costs ~50% of peak even when optimized.** Pure FP16 cuBLAS achieves ~215 TFLOPS (51% of peak). The best W4A16 kernel achieves 197.9 TFLOPS (47.2% of peak). The INT4 unpacking overhead (shift, mask, cast, subtract, multiply = 5 ALU ops per weight element) creates pipeline bubbles before tensor cores can fire.
+5. **Split dequant + cuBLAS** (exp 39 to 60): +10.7 TFLOPS (177.5 to 188.2). Stop trying to fuse dequant with matmul. Separate Triton dequant + cuBLAS FP16 matmul beat the best fused kernel.
 
 ## What Failed and Why
 
-- **BLOCK_SIZE_K=128**: Aligned with group_size but caused register spill, dropping from 155.7 to 128.8 TFLOPS.
-- **FP8 matmul**: 2x faster compute but correctness failed -- FP8 E4M3 (3 mantissa bits) cannot represent dequanted weights accurately enough.
-- **Fused dequant+matmul kernel**: Always slower than split approach because register pressure and ALU overhead compete with tensor core throughput.
-- **CUDA graphs**: Copy overhead for input buffers negated any launch overhead savings.
-- **Higher num_stages (5-6)**: Shared memory overflow at the required tile sizes.
-- **Eviction policy hints**: `evict_first`/`evict_last` had no measurable effect on Blackwell.
-- **Non-persistent 2D grid**: Always slower than persistent kernel pattern.
-- **Fused GEMM kernel**: Correctness failures in 9 of 12 shape configurations, likely group boundary handling issues.
+- **FP8 matmul (385 TFLOPS)**: 2x faster but correctness fails -- FP8 E4M3 has 3 mantissa bits, fundamentally cannot achieve atol=0.05 at K=5120. Per-row scaling, split-K, and e5m2 all tried and failed. It's a precision limit, not a scaling problem.
+- **Hardcoded configs (exps 94-95)**: Dropping from 328 to 250 TFLOPS. Autotune is essential -- no single config is universally optimal due to cache state and thermal variance.
+- **Persistent matmul (exp 77)**: -12 TFLOPS. The persistent pattern overhead outweighed L2 benefits at these sizes.
+- **Pure FP16 accumulator (exp 78)**: Compilation error -- Triton doesn't support FP16 accumulators in tl.dot directly.
+- **dot_scaled fp16 (exp 84)**: Falls back to BF16 software emulation on SM120. Not a native hardware path.
+- **2:4 structured sparsity**: cuSPARSELt matmul not supported on SM120 consumer Blackwell.
+- **torch.compile**: profile.py in project directory shadows stdlib profile module, breaking Dynamo.
