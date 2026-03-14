@@ -128,3 +128,80 @@ Fixed from 0/12 correctness to 12/12 PASS.
 | FP4 (NVFP4) | 1,676 TFLOPS | 1,303 TFLOPS | 1,261 TFLOPS | 75.2% |
 
 \* W4A16 328 TFLOPS exceeds FP16 dense peak because FP16 accumulation doubles tensor core throughput (uses the FP8 MMA datapath with FP16 operands).
+
+---
+
+## Session 3: Integration, Model Benchmarks, and Infrastructure
+
+### Infrastructure Experiments
+
+| Exp | Tag | Result | Description |
+|-----|-----|--------|-------------|
+| 12 | cuda_linear_integration | PASS | CUDA quant kernel (v3→v2→v1→Python fallback) integrated into NVFP4Linear |
+| 13 | profile_py_rename | PASS | profile.py→profiler.py, unblocks torch.compile/vLLM/transformers imports |
+| 17 | torch_compile_decode | REVERT | torch.compile 17x slower for M=1 decode (134µs vs 8µs graph overhead) |
+
+### Speculative Decoding Experiments
+
+| Exp | Tag | Result | Description |
+|-----|-----|--------|-------------|
+| 14 | eagle3_spec_decode | FAIL | Eagle3 head loaded but 3 vLLM bugs in Mamba/hybrid path |
+
+**vLLM bugs found and patched (2 of 3):**
+1. `gpu_model_runner.py:5011` — `hidden_states, _ = outputs` fails when model returns 1 or 3 values. Fixed: `outputs[0]` indexing.
+2. `eagle.py:1098` — same 2-value unpack without `model_returns_tuple()` guard. Fixed: added guard.
+3. `kv_cache_utils.py:946` — `assert new_spec.page_size_bytes == max_page_size` fails because Mamba conv states and attention KV caches have different page sizes. **Not fixed** — requires architectural changes to vLLM's cache manager.
+
+**Compatible draft models found:**
+- `jiapingW/Qwen3.5-35B-A3B-Eagle3-Specforge` — Eagle3 head, 475MB, vocab=248,320 ✓
+- `Qwen/Qwen3.5-2B` — draft model, vocab=248,320 ✓
+- Qwen2.5/Qwen3 models — vocab=151,936, **incompatible**
+
+### Model-Level Benchmarks
+
+| Exp | Tag | Result | Description |
+|-----|-----|--------|-------------|
+| 15 | fp8_kv_cache | PASS | FP8 KV: 88 tok/s decode, 2x context (4096 vs 2048), 19% decode cost |
+| 16 | long_context_4k | PASS | Prefill scales sub-linearly: 859→3,001 tok/s from 500→4K tokens |
+| 18 | w4a16_vs_nvfp4_35b | PASS | Head-to-head Qwen3.5-35B-A3B: NVFP4 2.5-37x faster than W4A16/GPTQ |
+
+### Qwen3.5-35B-A3B Head-to-Head (vLLM on RTX 5090)
+
+| Metric | NVFP4 | W4A16 (GPTQ) | Ratio |
+|---|---|---|---|
+| Decode (warm) | 100-124 tok/s | 37-39 tok/s | **3.1x** |
+| Prefill 250 tok TTFT | 285ms | 10,736ms | **37x** |
+| Prefill 4000 tok TTFT | 1,335ms | ~40s est. | **~30x** |
+| Batch x8 | ~124 tok/s | 49 tok/s | **2.5x** |
+| Load time | 72s | 1,281s | **18x** |
+| VRAM | 26 GB | 31 GB | 0.84x |
+
+### Long Context Prefill Scaling (NVFP4, FP8 KV cache)
+
+| Context | TTFT | Prefill tok/s |
+|---|---|---|
+| 500 tokens | 589ms | 859 |
+| 1,000 tokens | 657ms | 1,531 |
+| 2,000 tokens | 840ms | 2,387 |
+| 4,000 tokens | 1,335ms | 3,001 |
+
+TTFT grows sub-linearly: 8x more tokens costs only 2.3x more time.
+
+### What Failed (New Lessons)
+
+- **torch.compile on single-layer decode**: Adds 134µs CUDA graph management overhead per layer for M=1, vs 8µs for raw F.linear. The single cuBLAS call is already optimal — no operations to fuse. torch.compile only helps chains of elementwise ops, not single matmuls.
+- **Eagle3 on Mamba/hybrid models**: Three cascading bugs in vLLM 0.17.1. Each fix reveals the next. The fundamental issue is that Mamba conv states and attention KV caches have different memory layouts that Eagle3's cache unification can't handle.
+- **CUDA 12.9 raw PTX**: Still can't access FP4 MMA instructions via PTX. The actual SASS instruction is `OMMA.SF.16864` — a proprietary opcode only emitted by CUTLASS's SM120 code generator, not exposed through standard PTX.
+- **FlashInfer CUTLASS standalone**: 1,108 TFLOPS vs cuBLASLt's 1,251 — same underlying kernel but more dispatch overhead.
+
+### Complete Experiment Count
+
+| Kernel Type | Experiments | Best TFLOPS | Status |
+|---|---|---|---|
+| quantized_matmul_w4a16 | 97 | 328 | Production |
+| nvfp4_matmul | 18 | 1,261 | Production |
+| dequantize_fused_gemm | 3 | 212 | Production |
+| flash_attention | (Session 1) | 399 | Production |
+| infrastructure | 3 | — | Done |
+| model_benchmark | 1 | — | Done |
+| **Total** | **122+** | **1,261** | — |

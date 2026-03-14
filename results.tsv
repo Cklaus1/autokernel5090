@@ -39,3 +39,18 @@ experiment	tag	kernel_type	throughput_tflops	latency_us	pct_peak	speedup_vs_pyto
 1	autotune	dequantize_fused_gemm	24.364	13700.0	5.8	0.377	FAIL	1877.7	Added autotune configs for fused kernel
 2	split_dequant_cublas	dequantize_fused_gemm	212.284	4097.01	50.7	3.324	PASS	4152.6	Split dequant + cuBLAS F.linear + fix buffer aliasing
 11	nvfp4_scaled_mm_v2	nvfp4_matmul	1012.293	106.07	241.6	4.635	PASS	1553.9	REVERT: _scaled_mm_v2 slower than _scaled_mm (1012 vs 1261)
+3	nvfp4_searchsorted_cachefix	nvfp4_matmul	240.481	446.50	57.4	1.113	PASS	1553.9	Searchsorted quant + cache fix (shape+data_ptr key)
+4	nvfp4_torch_compile	nvfp4_matmul	0.0	0	0	0	FAIL	0	REVERT: torch.compile blocked by profile.py shadowing stdlib
+5	nvfp4_searchsorted_cachefix	nvfp4_matmul	240.481	446.50	57.4	1.113	PASS	1553.9	Searchsorted quant + cache fix. MLP gate 638 TFLOPS (2.81x cuBLAS)
+6	nvfp4_cuda_quant	nvfp4_matmul	899.917	119.32	214.8	4.112	PASS	1553.9	CUDA quant kernel v1 (23µs vs 358µs Python)
+7	nvfp4_cuda_v2_fused_pad	nvfp4_matmul	971.802	110.49	231.9	4.397	PASS	1553.9	CUDA v2 fused FP8 scale padding (26µs)
+8	nvfp4_cuda_graph	nvfp4_matmul	842.450	127.45	201.1	3.853	FAIL	1553.9	REVERT: CUDA graph adds copy overhead + NaN in adversarial tests
+9	nvfp4_v3_half2_vectorized	nvfp4_matmul	987.279	108.76	235.6	4.529	PASS	1553.9	Vectorized half2 loads + additive thresholds (24µs)
+10	nvfp4_cache_both	nvfp4_matmul	1260.545	85.18	300.8	5.707	PASS	1553.9	Cache both A+B quant. Pure GEMM: 1261 TFLOPS (5.71x cuBLAS)
+12	nvfp4_cuda_linear_integration	nvfp4_matmul	0	0	0	0	PASS	0	CUDA quant kernel integrated into NVFP4Linear module
+13	profile_py_rename	infrastructure	0	0	0	0	PASS	0	Renamed profile.py->profiler.py, unblocks torch.compile/vLLM/transformers
+14	eagle3_spec_decode	nvfp4_matmul	0	0	0	0	FAIL	0	Eagle3 blocked: 3 vLLM bugs (unpack, model_runner, KV page size)
+15	fp8_kv_cache	nvfp4_matmul	87.9	0	0	0	PASS	26000	FP8 KV cache: 2x context (4096), 88 tok/s decode (19% cost)
+16	long_context_4k	nvfp4_matmul	3001	0	0	0	PASS	26000	Prefill scaling: 859->3001 tok/s from 500->4000 tokens
+17	torch_compile_decode	nvfp4_matmul	0	134	0	0.06	REVERT	0	REVERT: torch.compile 17x slower for single-layer M=1 decode
+18	w4a16_vs_nvfp4_35b	model_benchmark	0	0	0	0	PASS	0	35B model: NVFP4 100tok/s vs W4A16 39tok/s decode (2.5x), prefill 37x
