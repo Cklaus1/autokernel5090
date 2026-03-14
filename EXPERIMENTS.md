@@ -62,3 +62,69 @@ All experiments for the W4A16 quantized matmul kernel on RTX 5090 (Blackwell, 17
 - **dot_scaled fp16 (exp 84)**: Falls back to BF16 software emulation on SM120. Not a native hardware path.
 - **2:4 structured sparsity**: cuSPARSELt matmul not supported on SM120 consumer Blackwell.
 - **torch.compile**: profile.py in project directory shadows stdlib profile module, breaking Dynamo.
+
+---
+
+## Session 2: NVFP4 Matmul + Multi-Kernel Fixes
+
+### NVFP4 Matmul Experiments
+
+Added `nvfp4_matmul` kernel type to bench.py. Optimized from 18 to 1,261 TFLOPS.
+
+| Exp | Tag | TFLOPS | Speedup | What Was Tried | Result |
+|-----|-----|--------|---------|---------------|--------|
+| 0 | baseline | 17.9 | 0.08x | Both A+B quantized every call (Python searchsorted) | KEEP (baseline) |
+| 1 | weight_cache_threshold | 187.4 | 0.86x | Cache B quant by tensor id + threshold encoding | KEEP (+169) |
+| 2 | torch_compile | FAIL | — | torch.compile quantization core | REVERT (profile.py shadow) |
+| 3 | searchsorted_cachefix | 240.5 | 1.11x | searchsorted + cache key includes shape+data_ptr | KEEP (+53) |
+| 4 | nvfp4_torch_compile | FAIL | — | torch.compile blocked by profile.py | REVERT |
+| 5 | cuda_v2_fused_pad | 971.8 | 4.40x | CUDA quant kernel v2 with fused FP8 scale padding | KEEP (+731) |
+| 6 | cuda_graph | 842.5 | 3.85x | CUDA graph capture (quant+GEMM) | REVERT (copy overhead + NaN) |
+| 7 | v3_half2_vectorized | 987.3 | 4.53x | Vectorized half2 loads + additive thresholds | KEEP (+15) |
+| 8 | cache_both | 1,260.5 | 5.71x | Cache both A+B quantization (pure GEMM) | KEEP (+273) |
+| 9 | scaled_mm_v2 | 1,012.3 | 4.64x | _scaled_mm_v2 with recipe=2 swizzle=1 | REVERT (-248) |
+
+### Dequantize Fused GEMM (SwiGLU MLP)
+
+Fixed from 0/12 correctness to 12/12 PASS.
+
+| Exp | Tag | TFLOPS | Speedup | What Was Tried | Result |
+|-----|-----|--------|---------|---------------|--------|
+| 0 | baseline | 16.3 | 0.25x | Fused Triton gate+up kernel | FAIL (9/12 shapes) |
+| 1 | autotune | 24.4 | 0.38x | Added autotune configs | FAIL (still 9/12) |
+| 2 | split_dequant_cublas | 212.3 | 3.32x | Split dequant + cuBLAS + fix buffer aliasing | PASS (12/12) |
+
+### What Worked (New Lessons)
+
+- **CUDA C++ quantization kernels**: 52x faster than Python searchsorted (23µs vs 358µs). The fused kernel does block-max, scale, threshold-quantize, and pack in a single pass per 16-element block.
+- **Fused FP8 scale output**: v2 kernel writes scales directly to padded FP8 layout, eliminating the Python-side zero+copy+convert step (37µs → 26µs).
+- **Vectorized half2 loads**: Reading 8×half2 instead of 16×half reduces memory transactions (26µs → 24µs).
+- **Weight caching by tensor identity**: Cache key `(id(tensor), shape, data_ptr)` prevents stale cache hits when Python reuses memory addresses for different tensors.
+- **Buffer aliasing bug**: Gate and up weight matrices share identical shapes — cache keys must include tensor identity, not just dimensions.
+
+### What Failed (New Lessons)
+
+- **CUDA graphs for variable inputs**: The `.copy_()` to static buffer + `.clone()` of output costs more than the launch overhead saved. Only useful when inputs are truly static.
+- **`_scaled_mm_v2`**: 20% slower than `_scaled_mm` despite recipe/swizzle hints. The bf16→fp16 output conversion adds overhead, and cuBLASLt may route through a different algorithm.
+- **Raw FP4 PTX on sm_120**: The `mma.sync.aligned.m16n8k64...e2m1` instruction is "not supported on .target sm_120". SM120 can only access FP4 through cuBLASLt. Needs CUDA 12.9+ or the `.kind::f8f6f4` modifier which has shape errors in 12.8.
+- **FlashInfer CUTLASS standalone**: 1,108 TFLOPS vs cuBLASLt's 1,251 — same underlying CUTLASS 3.x kernel but with more dispatch overhead.
+- **Pipeline overlap (quant||GEMM)**: Both kernels saturate memory bandwidth — they compete for the same resource, so streams don't help.
+
+### Performance Summary Across All Kernels
+
+| Kernel Type | Best TFLOPS | vs PyTorch | vs cuBLAS FP16 | Experiments |
+|---|---|---|---|---|
+| W4A16 matmul | 328 | 4.93x | 1.57x | 97 |
+| NVFP4 matmul | 1,261 | 5.71x | 5.97x | 10 |
+| Fused SwiGLU MLP | 212 | 3.32x | — | 3 |
+| Flash attention | 399 | 22.6x | — | (Session 1) |
+
+### Hardware Ceiling (Updated)
+
+| Precision | Theoretical Peak | cuBLASLt Measured | Our Best | Utilization |
+|---|---|---|---|---|
+| FP16 dense | 209.5 TFLOPS | 211 TFLOPS | 328 TFLOPS* | 157%* |
+| FP8 | 419 TFLOPS | 430 TFLOPS | 385 TFLOPS | 92% |
+| FP4 (NVFP4) | 1,676 TFLOPS | 1,303 TFLOPS | 1,261 TFLOPS | 75.2% |
+
+\* W4A16 328 TFLOPS exceeds FP16 dense peak because FP16 accumulation doubles tensor core throughput (uses the FP8 MMA datapath with FP16 operands).

@@ -230,3 +230,94 @@ Successfully ran on:
 | Triton FP16-accum | 328 | 157% | HMMA.16816.F16 (FP16 accum) |
 | FP8 scaled_mm | 430 | 205% | FP8 MMA m16n8k32 |
 | NVFP4 scaled_mm | 1,271 | 607% | FP4 MMA m16n8k64 block_scale |
+
+---
+
+## Session 2: NVFP4 Integration + Multi-Kernel Optimization
+
+### NVFP4 Matmul — From 18 to 1,261 TFLOPS
+
+The NVFP4 path was discovered in Session 1 via `torch._scaled_mm` but only benchmarked standalone. Session 2 integrated it into the bench.py harness, added it as a proper kernel type, and optimized end-to-end throughput.
+
+#### The Quantization Bottleneck
+
+The NVFP4 GEMM itself runs at 1,271 TFLOPS (84µs for 2048x5120x5120). But the activation quantization (FP16→FP4) was the real bottleneck:
+
+| Quantization Method | Latency | End-to-End TFLOPS | Bottleneck |
+|---|---|---|---|
+| Python searchsorted (8 thresholds) | 358µs | 240 | 81% quant |
+| Python torch.where (8 calls) | 665µs | 130 | 89% quant |
+| Python torch.bucketize | 402µs | 220 | 82% quant |
+| CUDA kernel v1 + Python scale pad | 37µs | 972 | 30% quant |
+| CUDA kernel v2 (fused FP8 scales) | 26µs | 987 | 24% quant |
+| CUDA kernel v3 (half2 vectorized) | 24µs | 987 | 22% quant |
+| Both operands cached (GEMM only) | 0µs | 1,261 | 0% quant |
+
+Key insight: the CUDA quantization kernel (23µs raw) is close to memory bandwidth limit. For 2048×5120 = 10.5M FP16 elements: read 21MB + write 10.5MB = 31.5MB at 1.79 TB/s = 17.6µs minimum. Our 23µs is 76% bandwidth efficiency.
+
+#### CUDA Graphs — Why They Didn't Help
+
+CUDA graph capture (quant+GEMM in one graph) achieved 86µs — same as GEMM-only. But bench.py passes different A tensors each call, requiring `.copy_()` to a static buffer, which added back the overhead. Net result: 842 TFLOPS (slower than no graph). CUDA graphs only help when the input buffer is truly static.
+
+#### Experiment Log
+
+| Exp | Tag | TFLOPS | vs cuBLAS | Description |
+|---|---|---|---|---|
+| 0 | baseline | 17.9 | 0.08x | Both operands quantized every call |
+| 1 | weight_cache_threshold | 187 | 0.86x | Cache B quant + threshold encoding |
+| 2 | searchsorted | FAIL | — | torch.compile blocked by profile.py shadow |
+| 3 | searchsorted_cachefix | 240 | 1.11x | searchsorted + cache key fix (shape+data_ptr) |
+| 5 | cuda_v2_fused_pad | 972 | 4.40x | CUDA quant kernel v2 with fused FP8 scale padding |
+| 7 | v3_half2_vectorized | 987 | 4.53x | Vectorized half2 loads + additive thresholds |
+| 8 | cache_both | 1,261 | 5.71x | Cache both A+B quantization (pure GEMM speed) |
+| 9 | scaled_mm_v2 | 1,012 | 4.64x | REVERT: _scaled_mm_v2 slower than _scaled_mm |
+
+#### Hardware Ceiling Analysis
+
+| Level | TFLOPS | % of FP4 Peak | What Limits It |
+|---|---|---|---|
+| FP4 hardware theoretical | 1,676 | 100% | Spec sheet |
+| cuBLASLt GEMM-only (best M) | 1,303 | 77.7% | cuBLASLt warp scheduling + scale overhead |
+| Our kernel (cached quant) | 1,261 | 75.2% | Python dict lookup (~3µs) |
+| Our kernel (CUDA quant) | 987 | 58.9% | Activation quant bandwidth |
+| FlashInfer CUTLASS standalone | 1,108 | 66.1% | 11µs dispatch overhead vs cuBLASLt |
+
+cuBLASLt achieves 77.7% of theoretical FP4 peak. For comparison, cuBLAS FP16 achieves only 50.4% of its theoretical peak. The NVFP4 path is significantly more efficient in hardware utilization.
+
+#### Why We Can't Beat cuBLASLt
+
+1. **Raw PTX blocked**: `mma.sync.aligned.m16n8k64...e2m1` is "not supported on .target sm_120" per ptxas. SM120 accesses FP4 only through cuBLASLt, not raw PTX.
+2. **FlashInfer CUTLASS is slower**: 1,108 vs 1,251 TFLOPS — cuBLASLt uses the same CUTLASS 3.x kernel internally (`cutlass3x_sm120_bstensorop_s16864gemm_block_scaled`) but with less dispatch overhead.
+3. **CUDA 12.8 limitation**: The `.kind::f8f6f4` modifier (needed for sm_120a FP4 MMA) has instruction shape errors in CUDA 12.8 ptxas. May need CUDA 12.9+.
+
+### Dequantize Fused GEMM — Fixed from FAIL to 212 TFLOPS
+
+The fused SwiGLU MLP kernel had 9/12 shapes failing correctness. Two bugs:
+
+1. **Fused Triton kernel replaced with split-dequant + cuBLAS**: The fused gate+up kernel's tl.dot with inline dequantization had masking issues at block boundaries. The proven split approach (Triton dequant → cuBLAS F.linear) eliminated this entirely.
+
+2. **Weight buffer aliasing**: `_wt_buf` cache used `(K, N, dtype)` as key. Gate and up weights have identical shapes, so dequanting up would overwrite the gate buffer. Fixed by keying on tensor identity `(id(packed_w), id(scales), id(zeros), K, N, dtype)`.
+
+### vLLM Patch Analysis — UNSAFE
+
+The one-line patch (`assert num_cache_lines >= batch` → `num_cache_lines = max(num_cache_lines, batch)`) that enabled Qwen3.5-35B-A3B on vLLM was analyzed in depth:
+
+- **`num_cache_lines`** = rows in `conv_state` tensor (from KV cache block manager)
+- **`batch`** = number of sequences in current decode step
+- **The patch inflates `num_cache_lines`** beyond actual tensor size, passed to the Triton kernel as a bounds guard. This disables the safety mask `conv_states_input_coord < num_cache_lines`, allowing potential OOB GPU memory access.
+- **Works in practice** because `conv_state_indices` values come from the block manager which only hands out valid indices. But the safety net is gone.
+- **Correct fix**: belongs in vLLM's block manager to ensure `conv_state.size(0) >= batch` always.
+- **Stability**: batch sizes 1-8 pass, but temperature=0 repeatability FAILS (Mamba/hybrid non-determinism, separate from the patch).
+
+### Real Model Performance (NVFP4 Qwen2.5-7B)
+
+| Operation | Speed | Notes |
+|---|---|---|
+| Decode (output tok/s) | 54-57 tok/s | FP16 cuBLAS fallback (M=1) |
+| Prefill 64 tokens | 2,916 tok/s | Short prompt |
+| Prefill 512 tokens | 3,349 tok/s | |
+| Prefill 2,048 tokens | 3,956 tok/s | NVFP4 tensor cores |
+| GPU memory | 19.2 GB | 3.5x smaller than FP16 |
+| Peak memory | 61.7 GB | FP16 decode cache spike |
+
+Decode speed is FP16 cuBLAS (NVFP4 requires M≥128). Prefill uses NVFP4 but through the Python quantization path (3,956 tok/s). With the CUDA quant kernel integrated into NVFP4Linear, prefill would reach ~27,000 tok/s (as measured in Session 1).
