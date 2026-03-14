@@ -54,3 +54,4 @@ experiment	tag	kernel_type	throughput_tflops	latency_us	pct_peak	speedup_vs_pyto
 16	long_context_4k	nvfp4_matmul	3001	0	0	0	PASS	26000	Prefill scaling: 859->3001 tok/s from 500->4000 tokens
 17	torch_compile_decode	nvfp4_matmul	0	134	0	0.06	REVERT	0	REVERT: torch.compile 17x slower for single-layer M=1 decode
 18	w4a16_vs_nvfp4_35b	model_benchmark	0	0	0	0	PASS	0	35B model: NVFP4 100tok/s vs W4A16 39tok/s decode (2.5x), prefill 37x
+19	eagle3_kv_fix	nvfp4_matmul	0	0	0	0	FAIL	31955	Fixed 3 vLLM bugs. Eagle3 loads but MoE autotuner takes 55+ min then hangs. Speculative decoding impractical for MoE hybrid models on vLLM 0.17.1
