@@ -22,8 +22,11 @@ _b_cache = {}
 _scale_buf = {}
 
 # JIT-compile the CUDA quantization kernel (v2: fused FP8 scale padding)
+_CUDA_SRC_V3 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nvfp4", "quantize_cuda_v3.cu")
 _CUDA_SRC_V2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nvfp4", "quantize_cuda_v2.cu")
 _CUDA_SRC_V1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nvfp4", "quantize_cuda.cu")
+if not os.path.exists(_CUDA_SRC_V3):
+    _CUDA_SRC_V3 = None
 if not os.path.exists(_CUDA_SRC_V2):
     _CUDA_SRC_V2 = None
 
@@ -33,7 +36,19 @@ _nvfp4_version = 0
 def _get_cuda_quant():
     global _nvfp4_cuda, _nvfp4_version
     if _nvfp4_cuda is None:
-        # Try v2 first (fused FP8 scale padding)
+        # Try v3 first (vectorized half2 + manual FP8)
+        if _CUDA_SRC_V3 is not None:
+            try:
+                _nvfp4_cuda = _load_ext(
+                    'nvfp4_quant_v3', sources=[_CUDA_SRC_V3],
+                    extra_cuda_cflags=['-O3', '--use_fast_math', '-arch=sm_80'],
+                    verbose=False,
+                )
+                _nvfp4_version = 2  # same API as v2
+                return _nvfp4_cuda
+            except Exception:
+                pass
+        # Try v2 (fused FP8 scale padding via __nv_fp8_e4m3)
         if _CUDA_SRC_V2 is not None:
             try:
                 _nvfp4_cuda = _load_ext(
