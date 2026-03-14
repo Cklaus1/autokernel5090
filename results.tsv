@@ -38,3 +38,4 @@ experiment	tag	kernel_type	throughput_tflops	latency_us	pct_peak	speedup_vs_pyto
 0	baseline	dequantize_fused_gemm	16.295	20500.0	3.9	0.254	FAIL	1877.7	Baseline 32x32x32 blocks
 1	autotune	dequantize_fused_gemm	24.364	13700.0	5.8	0.377	FAIL	1877.7	Added autotune configs for fused kernel
 2	split_dequant_cublas	dequantize_fused_gemm	212.284	4097.01	50.7	3.324	PASS	4152.6	Split dequant + cuBLAS F.linear + fix buffer aliasing
+11	nvfp4_scaled_mm_v2	nvfp4_matmul	1012.293	106.07	241.6	4.635	PASS	1553.9	REVERT: _scaled_mm_v2 slower than _scaled_mm (1012 vs 1261)

@@ -72,6 +72,8 @@ class NVFP4Linear(nn.Module):
         if M < 128:
             # Small M: FP16 cuBLAS (NVFP4 scale padding fails for M < 128)
             out = torch.nn.functional.linear(x, self._get_fp16_weights())
+            if self.bias_p is not None:
+                out = out + self.bias_p
         else:
             # Large M: NVFP4 tensor cores (~1271 TFLOPS)
             a_fp4, a_scale = quantize_to_nvfp4_fast(x, block_size=16)
@@ -82,9 +84,9 @@ class NVFP4Linear(nn.Module):
                 scale_b=self.w_scale,
                 out_dtype=torch.float16,
             )
+            if self.bias_p is not None:
+                out = out + self.bias_p
 
-        if self.bias_p is not None:
-            out = out + self.bias_p
         return out.reshape(*shape[:-1], self.N)
 
 
