@@ -60,3 +60,4 @@ experiment	tag	kernel_type	throughput_tflops	latency_us	pct_peak	speedup_vs_pyto
 22	eagle3_inference	nvfp4_matmul	0	0	0	0	FAIL	31955	Eagle3 loads (161s) but hangs on first generate. Mamba inference broken.
 23	nvfp4_decode_crossover	nvfp4_matmul	153	0	0	1.34	PASS	0	NVFP4 decode beats FP16 at M>=128 (batch=128+ concurrent users)
 24	triton_dot_scaled_fp4	nvfp4_matmul	0	0	0	0	FAIL	0	tl.dot_scaled e2m1 needs pre-packed FP4 input, not a simple drop-in
+25	triton_dot_scaled_e2m1	nvfp4_matmul	0	0	0	0	FAIL	0	Triton 3.6 dot_scaled e2m1 compiles to MLIR but LLVM lowering bug (f32 zext). Close to working.
