@@ -206,7 +206,8 @@ def kernel_fn(
     # Store strong references to originals to prevent id()/data_ptr() reuse.
     nsplit_key = (id(A), id(B))
     entry = _nsplit_cache.get(nsplit_key)
-    if entry is None or entry[0] is not A or entry[1] is not B:
+    cache_miss = entry is None or entry[0] is not A or entry[1] is not B
+    if cache_miss:
         N_half = N // 2
         B1 = B[:N_half].contiguous()
         B2 = B[N_half:].contiguous()
@@ -221,10 +222,10 @@ def kernel_fn(
 
     _, _, A_fp4, scale_a, B1_col, sb1, B2_col, sb2, N_half = _nsplit_cache[nsplit_key]
 
-    # Ensure sub-streams wait for any pending work on the default stream
-    # (quantization on cache miss runs on the default stream)
-    _stream1.wait_stream(torch.cuda.current_stream())
-    _stream2.wait_stream(torch.cuda.current_stream())
+    # On cache miss, sub-streams must wait for quantization on the default stream
+    if cache_miss:
+        _stream1.wait_stream(torch.cuda.current_stream())
+        _stream2.wait_stream(torch.cuda.current_stream())
 
     # Run two half-N GEMMs concurrently on separate streams
     with torch.cuda.stream(_stream1):
