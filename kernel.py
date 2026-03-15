@@ -227,12 +227,18 @@ def kernel_fn(
         _stream1.wait_stream(torch.cuda.current_stream())
         _stream2.wait_stream(torch.cuda.current_stream())
 
-    # Run two half-N GEMMs concurrently on separate streams
+    # Pre-allocate output buffer (reuse across calls for same shape)
+    out_key = (M, N)
+    if out_key not in _out_buf or _out_buf[out_key].device != A.device:
+        _out_buf[out_key] = torch.empty(M, N, device=A.device, dtype=torch.float16)
+    out = _out_buf[out_key]
+
+    # Run two half-N GEMMs concurrently, write directly to output slices
     with torch.cuda.stream(_stream1):
-        c1 = torch._scaled_mm(A_fp4, B1_col, scale_a=scale_a, scale_b=sb1, out_dtype=torch.float16)
+        out[:, :N_half] = torch._scaled_mm(A_fp4, B1_col, scale_a=scale_a, scale_b=sb1, out_dtype=torch.float16)
     with torch.cuda.stream(_stream2):
-        c2 = torch._scaled_mm(A_fp4, B2_col, scale_a=scale_a, scale_b=sb2, out_dtype=torch.float16)
+        out[:, N_half:] = torch._scaled_mm(A_fp4, B2_col, scale_a=scale_a, scale_b=sb2, out_dtype=torch.float16)
 
     torch.cuda.current_stream().wait_stream(_stream1)
     torch.cuda.current_stream().wait_stream(_stream2)
-    return torch.cat([c1, c2], dim=1)
+    return out
