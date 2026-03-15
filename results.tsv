@@ -72,3 +72,4 @@ experiment	tag	kernel_type	throughput_tflops	latency_us	pct_peak	speedup_vs_pyto
 34	9b_nvfp4_fp8kv_32k	model_benchmark	4475	0	0	0	PASS	8000	9B NVFP4 + FP8 KV: 32K context works! Same throughput as default.
 35	9b_nvfp4_eager	model_benchmark	1651	0	0	0	PASS	8000	REVERT: Eager mode 3x slower than CUDA graphs (1651 vs 4471 batch64)
 36	9b_nvfp4_no_chunked	model_benchmark	4513	0	0	0	PASS	8000	No chunked prefill: 4513 tok/s batch64, marginal improvement
+37	coding_quality_9b_vs_35b	model_benchmark	0	0	0	0	PASS	0	8 coding tasks: quality is identical. 35B slightly more generic, 9B more concise. Both produce correct code.
