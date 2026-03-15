@@ -206,4 +206,4 @@ def kernel_fn(
 
     torch.cuda.current_stream().wait_stream(_stream1)
     torch.cuda.current_stream().wait_stream(_stream2)
-    return c1 + c2
+    return c1.add_(c2)
