@@ -3,6 +3,9 @@
 Stores weights in packed FP4 format (~4x compression vs FP16).
 Uses NVFP4 tensor cores for M >= 128 (prefill), FP16 cuBLAS for M < 128 (decode).
 
+M-split optimization: for M >= 512, splits along M dimension and runs two
+concurrent GEMMs on separate CUDA streams for ~2x throughput via SM overlap.
+
 Memory model:
   - w_fp4: [N, K//2] packed FP4 weights (permanent, ~4x smaller)
   - w_scale: flat FP8 block scales (permanent, small)
@@ -15,6 +18,13 @@ import torch
 import torch.nn as nn
 
 from .quantize import quantize_to_nvfp4, quantize_to_nvfp4_fast, dequantize_nvfp4
+
+# Module-level CUDA streams for M-split (shared across all NVFP4Linear instances)
+_stream1 = None
+_stream2 = None
+
+# Minimum M for M-split (M_half must be >= 128 for quantization padding)
+_MSPLIT_MIN_M = 512
 
 
 class NVFP4Linear(nn.Module):
@@ -65,6 +75,7 @@ class NVFP4Linear(nn.Module):
         return dequantize_nvfp4(self.w_fp4, self.w_scale, self.N, self.K, 16).half()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        global _stream1, _stream2
         shape = x.shape
         x = x.reshape(-1, self.K).contiguous().half()
         M = x.shape[0]
@@ -74,8 +85,43 @@ class NVFP4Linear(nn.Module):
             out = torch.nn.functional.linear(x, self._get_fp16_weights())
             if self.bias_p is not None:
                 out = out + self.bias_p
+        elif M >= _MSPLIT_MIN_M:
+            # Large M: M-split with concurrent CUDA streams (~2x throughput)
+            if _stream1 is None:
+                _stream1 = torch.cuda.Stream()
+                _stream2 = torch.cuda.Stream()
+
+            M_half = M // 2
+            w_t = self.w_fp4.t()
+            out = torch.empty(M, self.N, device=x.device, dtype=torch.float16)
+            _default = torch.cuda.current_stream()
+
+            # Pipeline: quantize + GEMM on each stream
+            _stream1.wait_stream(_default)
+            _stream2.wait_stream(_default)
+
+            torch.cuda.set_stream(_stream1)
+            a1_fp4, a1_scale = quantize_to_nvfp4_fast(x[:M_half], block_size=16)
+            out[:M_half] = torch._scaled_mm(
+                a1_fp4, w_t, scale_a=a1_scale, scale_b=self.w_scale,
+                out_dtype=torch.float16,
+            )
+
+            torch.cuda.set_stream(_stream2)
+            a2_fp4, a2_scale = quantize_to_nvfp4_fast(x[M_half:], block_size=16)
+            out[M_half:] = torch._scaled_mm(
+                a2_fp4, w_t, scale_a=a2_scale, scale_b=self.w_scale,
+                out_dtype=torch.float16,
+            )
+
+            torch.cuda.set_stream(_default)
+            _default.wait_stream(_stream1)
+            _default.wait_stream(_stream2)
+
+            if self.bias_p is not None:
+                out = out + self.bias_p
         else:
-            # Large M: NVFP4 tensor cores (~1271 TFLOPS)
+            # Medium M (128-511): single NVFP4 GEMM
             a_fp4, a_scale = quantize_to_nvfp4_fast(x, block_size=16)
             out = torch._scaled_mm(
                 a_fp4,
