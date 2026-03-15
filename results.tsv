@@ -61,3 +61,6 @@ experiment	tag	kernel_type	throughput_tflops	latency_us	pct_peak	speedup_vs_pyto
 23	nvfp4_decode_crossover	nvfp4_matmul	153	0	0	1.34	PASS	0	NVFP4 decode beats FP16 at M>=128 (batch=128+ concurrent users)
 24	triton_dot_scaled_fp4	nvfp4_matmul	0	0	0	0	FAIL	0	tl.dot_scaled e2m1 needs pre-packed FP4 input, not a simple drop-in
 25	triton_dot_scaled_e2m1	nvfp4_matmul	0	0	0	0	FAIL	0	Triton 3.6 dot_scaled e2m1 compiles to MLIR but LLVM lowering bug (f32 zext). Close to working.
+26	block_size_vs_accuracy	nvfp4_matmul	0	0	0	0	PASS	0	Block 16: cos=0.9952 (12.5% overhead), Block 128: cos=0.9937 (1.6% overhead). Block 16 is optimal.
+27	activation_quant_strategy	nvfp4_matmul	0	0	0	0	PASS	0	max_abs wins over clip99.9 for all activation patterns. Per-16-block scales handle outliers naturally.
+28	fp6_e3m2_support	nvfp4_matmul	0	0	0	0	FAIL	0	FP6 dtypes not in PyTorch 2.10. Mixed FP4/FP8 via _scaled_mm has shape conflicts.
