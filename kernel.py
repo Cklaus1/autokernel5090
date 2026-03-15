@@ -21,13 +21,14 @@ from torch.utils.cpp_extension import load as _load_ext
 _b_cache = {}
 _a_cache = {}
 _scale_buf = {}
-_nsplit_cache = {}
+_split_cache = {}
 _out_buf = {}
 _stream1 = None
 _stream2 = None
 
-# N-split threshold: use concurrent N-split for GEMMs with enough FLOPs
-_NSPLIT_FLOP_THRESHOLD = 2 * 1024 * 1024 * 1024  # 2 GFLOPS
+# Split thresholds
+_SPLIT_FLOP_THRESHOLD = 2 * 1024 * 1024 * 1024  # 2 GFLOPS minimum for split
+_MSPLIT_MIN_M = 512  # minimum M for M-split (M-split needs M/2 >= 256 for padding)
 
 # JIT-compile the CUDA quantization kernel (v2: fused FP8 scale padding)
 _CUDA_SRC_V3 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nvfp4", "quantize_cuda_v3.cu")
@@ -163,9 +164,9 @@ def kernel_fn(
 ) -> torch.Tensor:
     """NVFP4 matmul: C = A @ B.T via native FP4 tensor cores.
 
-    Uses N-split with concurrent CUDA streams: splits B (weights) along N
-    dimension, runs two half-N GEMMs on separate streams, writes directly
-    to pre-allocated output buffer. No reduction add needed.
+    Uses M-split or N-split with concurrent CUDA streams for higher throughput.
+    M-split preferred (contiguous row writes) when M >= 512.
+    Falls back to N-split for smaller M, single GEMM for tiny sizes.
 
     A: [M, K] float16
     B: [N, K] float16
@@ -176,7 +177,7 @@ def kernel_fn(
     N = B.shape[0]
 
     # For small GEMMs, single GEMM is faster (avoids stream overhead)
-    if 2 * M * N * K < _NSPLIT_FLOP_THRESHOLD or N < 64:
+    if 2 * M * N * K < _SPLIT_FLOP_THRESHOLD or N < 64:
         b_key = (id(B), B.shape, B.data_ptr())
         if b_key not in _b_cache:
             B_fp4, scale_b = _quantize_to_nvfp4(B, block_size=16)
@@ -202,42 +203,61 @@ def kernel_fn(
         _stream1 = torch.cuda.Stream()
         _stream2 = torch.cuda.Stream()
 
-    # Cache N-split quantization by tensor identity.
-    # Store strong references to originals to prevent id()/data_ptr() reuse.
-    nsplit_key = (id(A), id(B))
-    entry = _nsplit_cache.get(nsplit_key)
+    use_msplit = M >= _MSPLIT_MIN_M
+
+    # Cache split quantization by tensor identity.
+    split_key = (id(A), id(B))
+    entry = _split_cache.get(split_key)
     cache_miss = entry is None or entry[0] is not A or entry[1] is not B
     if cache_miss:
-        N_half = N // 2
-        B1 = B[:N_half].contiguous()
-        B2 = B[N_half:].contiguous()
+        if use_msplit:
+            M_half = M // 2
+            A1 = A[:M_half].contiguous()
+            A2 = A[M_half:].contiguous()
+            A1_fp4, sa1 = _quantize_to_nvfp4(A1, block_size=16)
+            A2_fp4, sa2 = _quantize_to_nvfp4(A2, block_size=16)
+            B_fp4, sb = _quantize_to_nvfp4(B, block_size=16)
+            if len(_split_cache) > 16:
+                _split_cache.clear()
+            _split_cache[split_key] = (A, B, 'M', M_half,
+                                        A1_fp4, sa1, A2_fp4, sa2, B_fp4.t(), sb)
+        else:
+            N_half = N // 2
+            B1 = B[:N_half].contiguous()
+            B2 = B[N_half:].contiguous()
+            A_fp4, sa = _quantize_to_nvfp4(A, block_size=16)
+            B1_fp4, sb1 = _quantize_to_nvfp4(B1, block_size=16)
+            B2_fp4, sb2 = _quantize_to_nvfp4(B2, block_size=16)
+            if len(_split_cache) > 16:
+                _split_cache.clear()
+            _split_cache[split_key] = (A, B, 'N', N_half,
+                                        A_fp4, sa, B1_fp4.t(), sb1, B2_fp4.t(), sb2)
 
-        A_fp4, scale_a = _quantize_to_nvfp4(A, block_size=16)
-        B1_fp4, sb1 = _quantize_to_nvfp4(B1, block_size=16)
-        B2_fp4, sb2 = _quantize_to_nvfp4(B2, block_size=16)
-
-        if len(_nsplit_cache) > 16:
-            _nsplit_cache.clear()
-        _nsplit_cache[nsplit_key] = (A, B, A_fp4, scale_a, B1_fp4.t(), sb1, B2_fp4.t(), sb2, N_half)
-
-    _, _, A_fp4, scale_a, B1_col, sb1, B2_col, sb2, N_half = _nsplit_cache[nsplit_key]
+    cached = _split_cache[split_key]
 
     # On cache miss, sub-streams must wait for quantization on the default stream
     if cache_miss:
         _stream1.wait_stream(torch.cuda.current_stream())
         _stream2.wait_stream(torch.cuda.current_stream())
 
-    # Pre-allocate output buffer (reuse across calls for same shape)
+    # Pre-allocate output buffer
     out_key = (M, N)
     if out_key not in _out_buf or _out_buf[out_key].device != A.device:
         _out_buf[out_key] = torch.empty(M, N, device=A.device, dtype=torch.float16)
     out = _out_buf[out_key]
 
-    # Run two half-N GEMMs concurrently, write directly to output slices
-    with torch.cuda.stream(_stream1):
-        out[:, :N_half] = torch._scaled_mm(A_fp4, B1_col, scale_a=scale_a, scale_b=sb1, out_dtype=torch.float16)
-    with torch.cuda.stream(_stream2):
-        out[:, N_half:] = torch._scaled_mm(A_fp4, B2_col, scale_a=scale_a, scale_b=sb2, out_dtype=torch.float16)
+    if cached[2] == 'M':
+        _, _, _, M_half, A1_fp4, sa1, A2_fp4, sa2, Bt, sb = cached
+        with torch.cuda.stream(_stream1):
+            out[:M_half] = torch._scaled_mm(A1_fp4, Bt, scale_a=sa1, scale_b=sb, out_dtype=torch.float16)
+        with torch.cuda.stream(_stream2):
+            out[M_half:] = torch._scaled_mm(A2_fp4, Bt, scale_a=sa2, scale_b=sb, out_dtype=torch.float16)
+    else:
+        _, _, _, N_half, A_fp4, sa, B1_col, sb1, B2_col, sb2 = cached
+        with torch.cuda.stream(_stream1):
+            out[:, :N_half] = torch._scaled_mm(A_fp4, B1_col, scale_a=sa, scale_b=sb1, out_dtype=torch.float16)
+        with torch.cuda.stream(_stream2):
+            out[:, N_half:] = torch._scaled_mm(A_fp4, B2_col, scale_a=sa, scale_b=sb2, out_dtype=torch.float16)
 
     torch.cuda.current_stream().wait_stream(_stream1)
     torch.cuda.current_stream().wait_stream(_stream2)
