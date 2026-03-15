@@ -203,7 +203,7 @@ def kernel_fn(
         _stream2 = torch.cuda.Stream()
 
     # Cache N-split quantization by tensor identity
-    nsplit_key = (id(A), A.data_ptr(), id(B), B.data_ptr())
+    nsplit_key = (id(A), A.data_ptr(), A.shape, id(B), B.data_ptr(), B.shape)
     if nsplit_key not in _nsplit_cache:
         N_half = N // 2
         B1 = B[:N_half].contiguous()
