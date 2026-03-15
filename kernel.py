@@ -21,9 +21,13 @@ from torch.utils.cpp_extension import load as _load_ext
 _b_cache = {}
 _a_cache = {}
 _scale_buf = {}
-_split_cache = {}
+_nsplit_cache = {}
+_out_buf = {}
 _stream1 = None
 _stream2 = None
+
+# N-split threshold: use concurrent N-split for GEMMs with enough FLOPs
+_NSPLIT_FLOP_THRESHOLD = 2 * 1024 * 1024 * 1024  # 2 GFLOPS
 
 # JIT-compile the CUDA quantization kernel (v2: fused FP8 scale padding)
 _CUDA_SRC_V3 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nvfp4", "quantize_cuda_v3.cu")
@@ -159,9 +163,9 @@ def kernel_fn(
 ) -> torch.Tensor:
     """NVFP4 matmul: C = A @ B.T via native FP4 tensor cores.
 
-    Uses split-K with concurrent CUDA streams for higher throughput.
-    B (weights) is pre-quantized and cached.
-    A (activations) is quantized on-the-fly via CUDA kernel.
+    Uses N-split with concurrent CUDA streams: splits B (weights) along N
+    dimension, runs two half-N GEMMs on separate streams, writes directly
+    to pre-allocated output buffer. No reduction add needed.
 
     A: [M, K] float16
     B: [N, K] float16
@@ -171,39 +175,62 @@ def kernel_fn(
     M, K = A.shape
     N = B.shape[0]
 
+    # For small GEMMs, single GEMM is faster (avoids stream overhead)
+    if 2 * M * N * K < _NSPLIT_FLOP_THRESHOLD or N < 64:
+        b_key = (id(B), B.shape, B.data_ptr())
+        if b_key not in _b_cache:
+            B_fp4, scale_b = _quantize_to_nvfp4(B, block_size=16)
+            if len(_b_cache) > 16:
+                _b_cache.clear()
+            _b_cache[b_key] = (B_fp4.t(), scale_b)
+        B_col, scale_b = _b_cache[b_key]
+
+        a_key = (id(A), A.shape, A.data_ptr())
+        if a_key not in _a_cache:
+            A_fp4, scale_a = _quantize_to_nvfp4(A, block_size=16)
+            if len(_a_cache) > 16:
+                _a_cache.clear()
+            _a_cache[a_key] = (A_fp4, scale_a)
+        A_fp4, scale_a = _a_cache[a_key]
+
+        return torch._scaled_mm(
+            A_fp4, B_col, scale_a=scale_a, scale_b=scale_b, out_dtype=torch.float16
+        )
+
     # Create streams lazily
     if _stream1 is None:
         _stream1 = torch.cuda.Stream()
         _stream2 = torch.cuda.Stream()
 
-    # Cache split quantization by tensor identity
-    split_key = (id(A), A.data_ptr(), id(B), B.data_ptr())
-    if split_key not in _split_cache:
-        K_half = K // 2
-        A1 = A[:, :K_half].contiguous()
-        A2 = A[:, K_half:].contiguous()
-        B1 = B[:, :K_half].contiguous()
-        B2 = B[:, K_half:].contiguous()
+    # Cache N-split quantization by tensor identity
+    nsplit_key = (id(A), A.data_ptr(), id(B), B.data_ptr())
+    if nsplit_key not in _nsplit_cache:
+        N_half = N // 2
+        B1 = B[:N_half].contiguous()
+        B2 = B[N_half:].contiguous()
 
-        A1_fp4, sa1 = _quantize_to_nvfp4(A1, block_size=16)
-        A2_fp4, sa2 = _quantize_to_nvfp4(A2, block_size=16)
+        A_fp4, scale_a = _quantize_to_nvfp4(A, block_size=16)
         B1_fp4, sb1 = _quantize_to_nvfp4(B1, block_size=16)
         B2_fp4, sb2 = _quantize_to_nvfp4(B2, block_size=16)
-        B1_col = B1_fp4.t()
-        B2_col = B2_fp4.t()
 
-        if len(_split_cache) > 16:
-            _split_cache.clear()
-        _split_cache[split_key] = (A1_fp4, sa1, B1_col, sb1, A2_fp4, sa2, B2_col, sb2)
+        if len(_nsplit_cache) > 16:
+            _nsplit_cache.clear()
+        _nsplit_cache[nsplit_key] = (A_fp4, scale_a, B1_fp4.t(), sb1, B2_fp4.t(), sb2, N_half)
 
-    A1_fp4, sa1, B1_col, sb1, A2_fp4, sa2, B2_col, sb2 = _split_cache[split_key]
+    A_fp4, scale_a, B1_col, sb1, B2_col, sb2, N_half = _nsplit_cache[nsplit_key]
 
-    # Run two half-K GEMMs concurrently on separate streams
+    # Pre-allocate output buffer (reused across calls for same shape)
+    out_key = (M, N, A.device)
+    if out_key not in _out_buf:
+        _out_buf[out_key] = torch.empty(M, N, device=A.device, dtype=torch.float16)
+    out = _out_buf[out_key]
+
+    # Run two half-N GEMMs concurrently, write directly to output slices
     with torch.cuda.stream(_stream1):
-        c1 = torch._scaled_mm(A1_fp4, B1_col, scale_a=sa1, scale_b=sb1, out_dtype=torch.float16)
+        out[:, :N_half] = torch._scaled_mm(A_fp4, B1_col, scale_a=scale_a, scale_b=sb1, out_dtype=torch.float16)
     with torch.cuda.stream(_stream2):
-        c2 = torch._scaled_mm(A2_fp4, B2_col, scale_a=sa2, scale_b=sb2, out_dtype=torch.float16)
+        out[:, N_half:] = torch._scaled_mm(A_fp4, B2_col, scale_a=scale_a, scale_b=sb2, out_dtype=torch.float16)
 
     torch.cuda.current_stream().wait_stream(_stream1)
     torch.cuda.current_stream().wait_stream(_stream2)
-    return c1.add_(c2)
+    return out
