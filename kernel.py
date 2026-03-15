@@ -246,19 +246,22 @@ def kernel_fn(
         _out_buf[out_key] = torch.empty(M, N, device=A.device, dtype=torch.float16)
     out = _out_buf[out_key]
 
+    _default = torch.cuda.current_stream()
+
     if cached[2] == 'M':
         _, _, _, M_half, A1_fp4, sa1, A2_fp4, sa2, Bt, sb = cached
-        with torch.cuda.stream(_stream1):
-            out[:M_half] = torch._scaled_mm(A1_fp4, Bt, scale_a=sa1, scale_b=sb, out_dtype=torch.float16)
-        with torch.cuda.stream(_stream2):
-            out[M_half:] = torch._scaled_mm(A2_fp4, Bt, scale_a=sa2, scale_b=sb, out_dtype=torch.float16)
+        torch.cuda.set_stream(_stream1)
+        out[:M_half] = torch._scaled_mm(A1_fp4, Bt, scale_a=sa1, scale_b=sb, out_dtype=torch.float16)
+        torch.cuda.set_stream(_stream2)
+        out[M_half:] = torch._scaled_mm(A2_fp4, Bt, scale_a=sa2, scale_b=sb, out_dtype=torch.float16)
     else:
         _, _, _, N_half, A_fp4, sa, B1_col, sb1, B2_col, sb2 = cached
-        with torch.cuda.stream(_stream1):
-            out[:, :N_half] = torch._scaled_mm(A_fp4, B1_col, scale_a=sa, scale_b=sb1, out_dtype=torch.float16)
-        with torch.cuda.stream(_stream2):
-            out[:, N_half:] = torch._scaled_mm(A_fp4, B2_col, scale_a=sa, scale_b=sb2, out_dtype=torch.float16)
+        torch.cuda.set_stream(_stream1)
+        out[:, :N_half] = torch._scaled_mm(A_fp4, B1_col, scale_a=sa, scale_b=sb1, out_dtype=torch.float16)
+        torch.cuda.set_stream(_stream2)
+        out[:, N_half:] = torch._scaled_mm(A_fp4, B2_col, scale_a=sa, scale_b=sb2, out_dtype=torch.float16)
 
-    torch.cuda.current_stream().wait_stream(_stream1)
-    torch.cuda.current_stream().wait_stream(_stream2)
+    torch.cuda.set_stream(_default)
+    _default.wait_stream(_stream1)
+    _default.wait_stream(_stream2)
     return out
