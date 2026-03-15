@@ -202,9 +202,11 @@ def kernel_fn(
         _stream1 = torch.cuda.Stream()
         _stream2 = torch.cuda.Stream()
 
-    # Cache N-split quantization by tensor identity
-    nsplit_key = (id(A), A.data_ptr(), A.shape, id(B), B.data_ptr(), B.shape)
-    if nsplit_key not in _nsplit_cache:
+    # Cache N-split quantization by tensor identity.
+    # Store strong references to originals to prevent id()/data_ptr() reuse.
+    nsplit_key = (id(A), id(B))
+    entry = _nsplit_cache.get(nsplit_key)
+    if entry is None or entry[0] is not A or entry[1] is not B:
         N_half = N // 2
         B1 = B[:N_half].contiguous()
         B2 = B[N_half:].contiguous()
@@ -215,9 +217,9 @@ def kernel_fn(
 
         if len(_nsplit_cache) > 16:
             _nsplit_cache.clear()
-        _nsplit_cache[nsplit_key] = (A_fp4, scale_a, B1_fp4.t(), sb1, B2_fp4.t(), sb2, N_half)
+        _nsplit_cache[nsplit_key] = (A, B, A_fp4, scale_a, B1_fp4.t(), sb1, B2_fp4.t(), sb2, N_half)
 
-    A_fp4, scale_a, B1_col, sb1, B2_col, sb2, N_half = _nsplit_cache[nsplit_key]
+    _, _, A_fp4, scale_a, B1_col, sb1, B2_col, sb2, N_half = _nsplit_cache[nsplit_key]
 
     # Run two half-N GEMMs concurrently on separate streams
     with torch.cuda.stream(_stream1):
