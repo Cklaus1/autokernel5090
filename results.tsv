@@ -65,3 +65,6 @@ experiment	tag	kernel_type	throughput_tflops	latency_us	pct_peak	speedup_vs_pyto
 27	activation_quant_strategy	nvfp4_matmul	0	0	0	0	PASS	0	max_abs wins over clip99.9 for all activation patterns. Per-16-block scales handle outliers naturally.
 28	fp6_e3m2_support	nvfp4_matmul	0	0	0	0	FAIL	0	FP6 dtypes not in PyTorch 2.10. Mixed FP4/FP8 via _scaled_mm has shape conflicts.
 29	bandwidth_ceiling	infrastructure	0	0	0	0	PASS	0	RTX 5090 real BW: 1500-1530 GB/s (85% spec). 35B NVFP4 decode limit: 952 tok/s. Getting 124 = 13% of BW limit.
+30	9b_fp16_baseline	model_benchmark	89.4	0	0	0	PASS	18000	Qwen3.5-9B FP16: 87-89 tok/s decode, 7.7K tok/s prefill, batch16=1249 total
+31	9b_nvfp4_kbenkhaled	model_benchmark	118.3	0	0	1.36	PASS	8000	Qwen3.5-9B NVFP4: 118 tok/s decode, 14K tok/s prefill, batch32=2987 total
+32	autotuner_cache_works	infrastructure	0	0	0	0	PASS	0	FlashInfer autotuner loaded 104 cached configs from disk. 55min->63s load.
