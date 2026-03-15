@@ -58,3 +58,5 @@ experiment	tag	kernel_type	throughput_tflops	latency_us	pct_peak	speedup_vs_pyto
 20	vllm_serve_openai	model_benchmark	119.3	1350	0	115	PASS	26000	vLLM OpenAI API server: 105-119 tok/s steady-state coding tasks
 21	continuous_batching	model_benchmark	56.5	13720	0	0	PASS	26000	Batch throughput: 1x=101, 2x=40, 4x=36, 8x=57 tok/s total
 22	eagle3_inference	nvfp4_matmul	0	0	0	0	FAIL	31955	Eagle3 loads (161s) but hangs on first generate. Mamba inference broken.
+23	nvfp4_decode_crossover	nvfp4_matmul	153	0	0	1.34	PASS	0	NVFP4 decode beats FP16 at M>=128 (batch=128+ concurrent users)
+24	triton_dot_scaled_fp4	nvfp4_matmul	0	0	0	0	FAIL	0	tl.dot_scaled e2m1 needs pre-packed FP4 input, not a simple drop-in
