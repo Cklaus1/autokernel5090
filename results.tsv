@@ -68,3 +68,7 @@ experiment	tag	kernel_type	throughput_tflops	latency_us	pct_peak	speedup_vs_pyto
 30	9b_fp16_baseline	model_benchmark	89.4	0	0	0	PASS	18000	Qwen3.5-9B FP16: 87-89 tok/s decode, 7.7K tok/s prefill, batch16=1249 total
 31	9b_nvfp4_kbenkhaled	model_benchmark	118.3	0	0	1.36	PASS	8000	Qwen3.5-9B NVFP4: 118 tok/s decode, 14K tok/s prefill, batch32=2987 total
 32	autotuner_cache_works	infrastructure	0	0	0	0	PASS	0	FlashInfer autotuner loaded 104 cached configs from disk. 55min->63s load.
+33	9b_nvfp4_default_8k	model_benchmark	4471	0	0	0	PASS	8000	9B NVFP4 batch64=4471 tok/s total, 70/user. FP8 KV same speed.
+34	9b_nvfp4_fp8kv_32k	model_benchmark	4475	0	0	0	PASS	8000	9B NVFP4 + FP8 KV: 32K context works! Same throughput as default.
+35	9b_nvfp4_eager	model_benchmark	1651	0	0	0	PASS	8000	REVERT: Eager mode 3x slower than CUDA graphs (1651 vs 4471 batch64)
+36	9b_nvfp4_no_chunked	model_benchmark	4513	0	0	0	PASS	8000	No chunked prefill: 4513 tok/s batch64, marginal improvement
