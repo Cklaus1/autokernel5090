@@ -227,6 +227,10 @@ def kernel_fn(
             B_fp4, sb = _quantize_to_nvfp4(B, block_size=16)
             Bt = B_fp4.t()
 
+            # Sub-streams must wait for B quantization on default stream
+            _stream1.wait_stream(_default)
+            _stream2.wait_stream(_default)
+
             torch.cuda.set_stream(_stream1)
             A1_fp4, sa1 = _quantize_to_nvfp4(A1, block_size=16)
             out[:M_half] = torch._scaled_mm(A1_fp4, Bt, scale_a=sa1, scale_b=sb, out_dtype=torch.float16)
