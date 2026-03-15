@@ -73,3 +73,14 @@ experiment	tag	kernel_type	throughput_tflops	latency_us	pct_peak	speedup_vs_pyto
 35	9b_nvfp4_eager	model_benchmark	1651	0	0	0	PASS	8000	REVERT: Eager mode 3x slower than CUDA graphs (1651 vs 4471 batch64)
 36	9b_nvfp4_no_chunked	model_benchmark	4513	0	0	0	PASS	8000	No chunked prefill: 4513 tok/s batch64, marginal improvement
 37	coding_quality_9b_vs_35b	model_benchmark	0	0	0	0	PASS	0	8 coding tasks: quality is identical. 35B slightly more generic, 9B more concise. Both produce correct code.
+38	9b_baseline	9b_serving	91.2	420	0	0	PASS	8000	Baseline: decode=91, batch32=420, prefill=5448
+39	9b_no_chunked_prefill	9b_serving	119.8	489	0	1.31	KEEP	8000	No chunked prefill: decode=120 (+31%), batch32=489, prefill=5519
+40	9b_no_prefix_cache	9b_serving	111.0	418	0	0.93	REVERT	8000	No prefix caching: decode=111 (-7%). Prefix caching helps.
+41	9b_multistep_4	9b_serving	0	0	0	0	FAIL	0	num_scheduler_steps not supported in vLLM 0.17.1
+42	9b_ctx_1024	9b_serving	1.2	405	0	0	REVERT	8000	Smaller context 1024: cold graph issue, no improvement
+43	9b_gpu_095	9b_serving	0	0	0	0	FAIL	0	OOM: external process uses 1.7GB, 0.95 util needs 30.25GB but only 30.1GB free
+44	9b_fp8_kv	9b_serving	0.7	18	0	0	REVERT	8000	FP8 KV: cold graph issue, slower. FP8 KV only useful for longer context, not speed.
+45	9b_max_seqs_64	9b_serving	109.0	430	0	0.91	REVERT	8000	max_num_seqs=64: decode=109 (-9%). Default 256 is better.
+46	9b_cudagraph_1024	9b_serving	108.8	439	0	0.91	REVERT	8000	Larger cudagraph capture: no improvement
+47	9b_variance_test	9b_serving	117.5	0	0	0	PASS	8000	Stable at 117.2-117.6 tok/s (0.3% variance). This is the decode ceiling.
+48	9b_bottleneck_analysis	9b_serving	117.5	0	0	0	PASS	8000	Decode ceiling 117.5tok/s. Weight read=2.94ms, actual=8.51ms. 63% is vLLM overhead (Python/IPC).
