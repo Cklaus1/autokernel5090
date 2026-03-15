@@ -221,6 +221,11 @@ def kernel_fn(
 
     _, _, A_fp4, scale_a, B1_col, sb1, B2_col, sb2, N_half = _nsplit_cache[nsplit_key]
 
+    # Ensure sub-streams wait for any pending work on the default stream
+    # (quantization on cache miss runs on the default stream)
+    _stream1.wait_stream(torch.cuda.current_stream())
+    _stream2.wait_stream(torch.cuda.current_stream())
+
     # Run two half-N GEMMs concurrently on separate streams
     with torch.cuda.stream(_stream1):
         c1 = torch._scaled_mm(A_fp4, B1_col, scale_a=scale_a, scale_b=sb1, out_dtype=torch.float16)
