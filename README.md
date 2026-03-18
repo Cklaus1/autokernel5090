@@ -176,6 +176,10 @@ Research and experiments by [Chris Klaus](https://github.com/Cklaus1), run on hi
 
 This project is **autoresearch for GPU kernels** -- directly inspired by Andrej Karpathy's [autoresearch](https://github.com/karpathy/autoresearch), the original experiment in autonomous AI research agents for LLM training. Karpathy showed that an AI agent can run hundreds of experiments overnight, methodically exploring a search space and logging every result. AutoKernel applies that same loop -- agent edits one file, runs a fixed evaluation, keeps or reverts -- to the domain of GPU kernel optimization with Triton.
 
+## Learn More
+
+**[Read the full whitepaper](WHITEPAPER.md)** -- a deep dive into all 225 experiments covering kernel-level CUDA optimization, NVFP4 quantization, DFlash speculative decoding, vLLM serving tuning, and 15 bug fixes across vLLM, SGLang, and FlashInfer. Includes hardware analysis, cost comparisons vs A100/B200, failure post-mortems, and design principles for next-generation inference systems.
+
 ## License
 
 MIT
