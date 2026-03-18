@@ -166,11 +166,13 @@ Every experiment is logged to `results.tsv` (tab-separated):
 | `peak_vram_mb` | Peak GPU memory usage |
 | `description` | What was tried |
 
+## About
+
+Research and experiments by [Chris Klaus](https://github.com/Cklaus1), run on his personal RTX 5090. Chris designed the optimization campaigns, collaborated with AI agents to unlock the full potential of consumer Blackwell silicon, and documented the methodology so others can reproduce and build on these results.
+
 ## Credits
 
 This project is **autoresearch for GPU kernels** -- directly inspired by Andrej Karpathy's [autoresearch](https://github.com/karpathy/autoresearch), the original experiment in autonomous AI research agents for LLM training. Karpathy showed that an AI agent can run hundreds of experiments overnight, methodically exploring a search space and logging every result. AutoKernel applies that same loop -- agent edits one file, runs a fixed evaluation, keeps or reverts -- to the domain of GPU kernel optimization with Triton.
-
-Built by the team behind [Forge](https://www.rightnowai.co/forge).
 
 ## License
 
