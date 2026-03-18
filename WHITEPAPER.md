@@ -35,6 +35,9 @@ We present the results of an extensive autonomous optimization campaign targetin
 
 The AutoKernel system's experiment-driven methodology — hypothesize, implement, benchmark, keep/revert — proved essential for navigating the complex interaction between quantization formats, attention backends, memory management, and speculative decoding on a novel GPU architecture.
 
+![Full 225-Experiment Campaign](images/full_campaign.png)
+*Figure 1: Full optimization campaign across kernel throughput, decode speed, and batch throughput.*
+
 ---
 
 ## 1. Introduction
@@ -87,6 +90,9 @@ This methodology was applied across 225+ experiments over multiple optimization 
 
 ## 2. Hardware Platform
 
+![RTX 5090 Blackwell](images/rtx5090_hero.png)
+*Figure 2: NVIDIA RTX 5090 — 328 TFLOPS W4A16 at 78% peak utilization.*
+
 ### 2.1 NVIDIA RTX 5090 (Blackwell Consumer)
 
 | Spec | Value |
@@ -128,6 +134,9 @@ The RTX 5090 (SM120) differs from data center Blackwell (SM100/B200) in several 
 
 ## 3. Model Architecture: Qwen3.5 Hybrid
 
+![Qwen3.5 Hybrid Architecture](images/qwen35_architecture.png)
+*Figure 3: Qwen3.5 hybrid architecture — 24 GatedDeltaNet layers + 8 full attention layers with 9B parameters.*
+
 ### 3.1 Qwen3.5-9B
 
 | Component | Details |
@@ -153,6 +162,9 @@ The RTX 5090 (SM120) differs from data center Blackwell (SM100/B200) in several 
 
 ### 4.1 W4A16 Quantized Matrix Multiply
 
+![W4A16 Optimization Progress](images/w4a16_optimization.png)
+*Figure 4: W4A16 quantized matmul optimization — 15.1 to 328 TFLOPS across 76 experiments, a 21.7x improvement.*
+
 **Result: 15 → 329 TFLOPS (21.7× improvement)**
 
 | Milestone | Exp | TFLOPS | Key Insight |
@@ -166,6 +178,9 @@ The RTX 5090 (SM120) differs from data center Blackwell (SM100/B200) in several 
 | Final (ALIGNED) | 89 | 328.9 | 78.5% of FP16 dense peak |
 
 **Key insight:** Split architecture (Triton dequant + cuBLAS GEMM) consistently outperforms fused Triton kernels. cuBLAS FP16 matmul is nearly impossible to beat.
+
+![Split vs Fused Paradigm](images/split_paradigm.png)
+*Figure 5: The split dequant + cuBLAS approach outperforms fused kernels — a key architectural insight from the W4A16 campaign.*
 
 ### 4.2 NVFP4 Matrix Multiply
 
