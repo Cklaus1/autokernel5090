@@ -2,6 +2,8 @@
 
 **Autoresearch for GPU kernels.** Give it any PyTorch model, go to sleep, wake up to optimized Triton kernels.
 
+> **[Read the Whitepaper](WHITEPAPER.md)** -- 225 experiments, 170 tok/s single-user decode, 8,245 tok/s batch throughput, 15 bug fixes across vLLM/SGLang/FlashInfer, all on a single RTX 5090.
+
 ![AutoKernel Full Campaign](autokernel_full_campaign.png)
 
 Inspired by [@karpathy/autoresearch](https://github.com/karpathy/autoresearch) -- which demonstrated autonomous AI agents for LLM training research. AutoKernel applies the same philosophy to GPU kernel optimization: agent modifies one file, runs a fixed evaluation, keeps or reverts, repeats forever.
