@@ -54,6 +54,8 @@ All experiments run on RTX 5090 (32GB), Gemma 4 31B AWQ-4bit (19.6GB weights).
 | 44 | llm-compressor E2B | — | FAILED | transformers version conflict |
 | 45 | FP8 on-the-fly draft | — | FAILED | vLLM validation error |
 | 46 | Manual FP8 weights | 4.6GB | Created | But vLLM can't load raw FP8 |
+| 47 | prithivMLmods E2B-FP8 draft | ~6GB | OOM | 19.6+6+1.6=27.2, padding kills it |
+| 48 | **Benchmark vs published RTX 5090** | — | **#1** | **Beat best published dense 30B+ (1217>1186)** |
 
 ## Key Insights
 
