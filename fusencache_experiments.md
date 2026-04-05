@@ -71,6 +71,8 @@ All experiments run on RTX 5090 (32GB), Gemma 4 31B AWQ-4bit (19.6GB weights).
 | 60 | **K8V4B16 Triton (exact per-block)** | 23K | **8.1 (eager)** | **COHERENT! Triton kernel works** |
 | 61 | K8V4B16 Triton + CUDA graphs (BLOCK_H=16) | — | FAILED | Shared memory overflow 107K>101K |
 | 62 | **K8V4B16 Triton + graphs (BLOCK_H=8)** | **20.2K** | **63.6** | **COHERENT! All 5 correct!** |
+| 63 | K8V4B16 serving C=1 | 20.2K | 14 | Works single-user |
+| 64 | K8V4B16 serving C=4+ | — | CRASHED | Engine dies under concurrent load |
 
 ## Key Insights
 
