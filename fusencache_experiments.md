@@ -60,6 +60,12 @@ All experiments run on RTX 5090 (32GB), Gemma 4 31B AWQ-4bit (19.6GB weights).
 | 50 | E2B text-only FP8 proper (compressed-tensors) | 4.6GB | Created | Fixed config format |
 | 51 | Spec decode: KV group assertion | — | Fixed | Bypass heterogeneous group check |
 | 52 | **Spec decode: E2B FP8 text-only + 31B AWQ** | 944 tok KV | **2.1 tok/s** | **FIRST WORKING Gemma 4 spec decode!** |
+| 53 | 132-config rapid sweep (random data) | — | 0.24s | Found K6V1B32 as winner |
+| 54 | v5 2-bit symmetric K+V | 70.4K | 12.1 | Garbage output (2-bit too aggressive) |
+| 55 | v5 int4 symmetric K+V | 35.2K | — | Engine died (build() param bug) |
+| 56 | v5 K6V1B32 (1-bit V) | 40.2K | 4.4 | Garbage (V=1bit: 59% error) |
+| 57 | **v5 K6V2B32** | **35.2K** | **6.6** | **Garbage — sweep != real model** |
+| — | **LESSON: random-data sweeps don't predict real model quality** | — | — | — |
 
 ## Key Insights
 
