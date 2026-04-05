@@ -56,6 +56,10 @@ All experiments run on RTX 5090 (32GB), Gemma 4 31B AWQ-4bit (19.6GB weights).
 | 46 | Manual FP8 weights | 4.6GB | Created | But vLLM can't load raw FP8 |
 | 47 | prithivMLmods E2B-FP8 draft | ~6GB | OOM | 19.6+6+1.6=27.2, padding kills it |
 | 48 | **Benchmark vs published RTX 5090** | — | **#1** | **Beat best published dense 30B+ (1217>1186)** |
+| 49 | E2B FP8 multimodal draft | ~5GB | OOM | Vision tower wastes VRAM |
+| 50 | E2B text-only FP8 proper (compressed-tensors) | 4.6GB | Created | Fixed config format |
+| 51 | Spec decode: KV group assertion | — | Fixed | Bypass heterogeneous group check |
+| 52 | **Spec decode: E2B FP8 text-only + 31B AWQ** | 944 tok KV | **2.1 tok/s** | **FIRST WORKING Gemma 4 spec decode!** |
 
 ## Key Insights
 

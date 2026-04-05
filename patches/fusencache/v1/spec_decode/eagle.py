@@ -1564,17 +1564,19 @@ class SpecDecodeBaseProposer:
         for id, kv_cache_group in enumerate(kv_cache_config.kv_cache_groups):
             for layer_name in kv_cache_group.layer_names:
                 kv_cache_groups[layer_name] = id
-        assert (
-            len(
-                set(
-                    [
-                        kv_cache_groups[layer_name]
-                        for layer_name in self._draft_attn_layer_names
-                    ]
-                )
+        num_groups = len(
+            set(
+                kv_cache_groups[layer_name]
+                for layer_name in self._draft_attn_layer_names
             )
-            == 1
-        ), "All drafting layers should belong to the same kv cache group"
+        )
+        if num_groups > 1:
+            # FusenCache: Allow heterogeneous KV groups for models like
+            # Gemma 4 that mix sliding window + global attention.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Draft model has %d KV cache groups (heterogeneous attention). "
+                "Spec decode may be slower but should still be correct.", num_groups)
 
     def initialize_attn_backend(
         self,
