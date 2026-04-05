@@ -215,8 +215,8 @@ def fusencache_v5_decode(query, kv_cache, scales, block_table, seq_lens,
     block_size = kv_cache.shape[1]
 
     BLOCK_D = triton.next_power_of_2(D)
-    BLOCK_KV = 32
-    BLOCK_H = min(16, kv_group_size)
+    BLOCK_KV = 16   # reduced from 32 to fit shared memory
+    BLOCK_H = min(8, kv_group_size)  # reduced from 16
     NUM_KV_SPLITS = 64
 
     mid_out = torch.empty(B, Hq, NUM_KV_SPLITS, D + 1,
@@ -239,7 +239,7 @@ def fusencache_v5_decode(query, kv_cache, scales, block_table, seq_lens,
         PAGE_SIZE=block_size, NUM_KV_HEADS=Hk,
         V_PACKED_SIZE=D // 2,
         NUM_SCALE_BLOCKS=D // BLOCK_SCALE,
-        num_warps=4, num_stages=2,
+        num_warps=4, num_stages=1,  # reduced to fit shared memory
     )
 
     output = torch.empty(B, Hq, D, dtype=query.dtype, device=query.device)

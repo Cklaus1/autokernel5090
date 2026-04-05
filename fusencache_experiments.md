@@ -69,7 +69,8 @@ All experiments run on RTX 5090 (32GB), Gemma 4 31B AWQ-4bit (19.6GB weights).
 | 58 | **K8V4B16 Python decode** | 23K | **11.2** | **COHERENT! 0.5% K error, 2.3x comp** |
 | 59 | K8V4B16 Triton (mean scale approx) | 23K | 160.9 | Fast but garbage (wrong scaling) |
 | 60 | **K8V4B16 Triton (exact per-block)** | 23K | **8.1 (eager)** | **COHERENT! Triton kernel works** |
-| 61 | K8V4B16 Triton + CUDA graphs | — | FAILED | Graph capture issue |
+| 61 | K8V4B16 Triton + CUDA graphs (BLOCK_H=16) | — | FAILED | Shared memory overflow 107K>101K |
+| 62 | **K8V4B16 Triton + graphs (BLOCK_H=8)** | **20.2K** | **63.6** | **COHERENT! All 5 correct!** |
 
 ## Key Insights
 
