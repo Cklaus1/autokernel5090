@@ -223,3 +223,36 @@ Current:                    6,685 tok/s (FusenCache eager)
 **Found:** grid.sync() costs 278μs per barrier across 170 SMs. With 4 barriers per MoE layer, that's ~1ms overhead — comparable to what CUDA graphs already save.
 **Result:** Persistent kernel IS viable but marginal gain over CUDA graphs. Main value: proves cooperative launch works on consumer Blackwell for future mega-graph concept.
 **Bug found:** Phase 6 unshuffle has race condition for multi-topk accumulation (needs atomicAdd).
+
+---
+
+## Meta-Discovery: The Measurement-First Principle
+
+**Pattern observed across 35 experiments:** 60% of confident predictions were wrong. The best discovery (disable inductor = 2x) was unplanned. The worst failures (FP8 KV, stream parallelism, pruning) had the highest pre-confidence.
+
+**The principle:** Never invest more than 1 day before measuring the critical assumption.
+
+```
+WRONG approach (what we did too often):
+  Predict X% gain → Build full solution (days) → Discover it doesn't work → Waste
+
+RIGHT approach (what we learned):
+  Identify critical assumption → Build cheapest test (hours) → Measure → 
+  If works: scale up
+  If fails: pivot immediately
+```
+
+**Applied to future work:**
+
+| Future Project | Critical Assumption | Cheapest Test | Cost |
+|---|---|---|---|
+| Diffusion adapter | Acceptance rate > 50% for MoE | Train 1-layer, 50M head on 5K prompts | 4 hours GPU |
+| C++ FP8 attention | cp.async achieves 90%+ BW | Write 100-line memcpy benchmark | 2 hours |
+| Persistent MoE | Grid.sync overhead < GEMM time | Already tested: 278μs (viable) | Done |
+| Any new kernel | Faster than existing | Microbenchmark FIRST | 1 hour |
+| Any model change | Quality preserved | Run validation suite (100+ tests) FIRST | 30 min |
+
+**For the diffusion plan specifically:**
+- Day 1: Train tiny draft (1 layer, 50M, 5K prompts) → measure acceptance rate
+- Decision gate: acceptance > 50% → proceed. < 30% → pivot to n-gram/dedicated model.
+- This 4-hour experiment prevents wasting 5-7 days on a failed approach.
