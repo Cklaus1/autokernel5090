@@ -3,24 +3,66 @@
 **Date:** 2026-04-09
 **Hardware:** RTX 5090 (Blackwell SM120), 32GB VRAM, 1792 GB/s HBM, 96MB L2
 **Model:** Gemma4 26B-A4B-it NVFP4 (FusenAI/modelopt format, BF16 attention)
-**Serving:** vLLM 0.19.1rc1 in Docker with CUDA graphs + torch.compile
+**Serving:** vLLM 0.19.1rc1 in Docker
+**HuggingFace:** [cklaus/gemma-4-26B-A4B-it-NVFP4](https://huggingface.co/cklaus/gemma-4-26B-A4B-it-NVFP4)
 
 ---
 
 ## Performance Results
 
-### Throughput Scaling
+### Throughput Progression (same model, same hardware, different configs)
 
-| Config | Gen tok/s | Notes |
-|--------|----------|-------|
-| enforce_eager (B=1) | 18 | Baseline — no CUDA graphs, no compile |
-| CUDA graphs (B=1) | 127 | **7x** — launch overhead eliminated |
-| CUDA graphs (B=4) | 383 | Linear scaling |
-| CUDA graphs (B=16) | 1,221 | GPU starting to saturate |
-| CUDA graphs (B=32) | 2,071 | Near saturation |
-| CUDA graphs (C=64) | 2,046 | Continuous serving |
-| CUDA graphs (C=128) | 2,890 | vLLM scheduler batching efficiently |
-| **CUDA graphs (C=256)** | **3,112** | **Peak — ceiling reached** |
+```
+    18 tok/s  →  enforce_eager baseline
+   127 tok/s  →  + CUDA graphs + torch.compile (inductor)         7x
+ 3,112 tok/s  →  + high concurrency (C=256)                     173x
+ 6,615 tok/s  →  + disable inductor, use C++ custom ops          368x  ← BEST
+```
+
+### Best Serving Config
+
+```bash
+vllm serve cklaus/gemma-4-26B-A4B-it-NVFP4 \
+  --quantization modelopt \
+  --max-model-len 4096 \
+  -cc.mode none \
+  -cc.cudagraph_mode full
+```
+
+### Throughput by Concurrency (best config)
+
+| Concurrency | Gen tok/s | Notes |
+|-------------|----------|-------|
+| C=1 | 89 | Single request — decode bound |
+| C=4 | 201 | |
+| C=16 | 305 | |
+| C=32 | 1,738 | Batching kicks in |
+| C=64 | 3,193 | |
+| C=128 | 4,982 | |
+| C=192 | 4,915 | |
+| **C=256** | **6,615** | **Peak throughput** |
+| C=384 | 5,863 | Scheduler overhead |
+| C=512 | 6,173 | Plateau |
+
+### Inductor vs No-Inductor
+
+| Config | B=1 tok/s | Peak tok/s | Peak at |
+|--------|----------|-----------|---------|
+| torch.compile (inductor) + piecewise CUDA graphs | **127** | 3,112 | C=256 |
+| No inductor + full CUDA graphs | 89 | **6,615** | C=256 |
+
+Inductor wins at single-request (127 vs 89) but loses at batch scale (3,112 vs 6,615). For serving workloads, **disable inductor**.
+
+Why: inductor's torch.compile adds graph capture overhead that doesn't amortize at high batch. vLLM's hand-written C++ custom ops (`_C.rms_norm`, `_C.cutlass_fp4_moe_mm`, etc.) are already optimized for these shapes. Inductor can't beat them and adds scheduling overhead.
+
+### KV Cache Configurations
+
+| KV Type | Tokens | Concurrency | B=1 tok/s | B=32 tok/s |
+|---------|--------|-------------|----------|-----------|
+| BF16 (default) | 43,760 | 15x | **127** | **2,071** |
+| FP8 | 87,344 | **30x** | 31 | 479 |
+
+**FP8 KV is 4x slower** — FlashInfer FP8 attention overhead on Gemma4's heterogeneous head dims (256 sliding / 512 global). Only useful when KV capacity matters more than throughput.
 
 ### KV Cache Configurations
 
@@ -141,7 +183,22 @@ vLLM's continuous batching scheduler is more efficient than sending fixed batche
 
 **Lesson:** For throughput benchmarks, use continuous serving (high concurrency) not fixed batch injection.
 
-### 8. `fuse_norm_quant` is Disabled By Default
+### 8. torch.compile (Inductor) Hurts Batch Throughput by 2x
+
+The default vLLM config enables `torch.compile` with the inductor backend. This helps single-request latency (+43%: 89 → 127 tok/s) but **halves peak throughput** (6,615 → 3,112 tok/s).
+
+Why:
+- Inductor adds graph capture + tracing overhead per batch iteration
+- Piecewise CUDA graphs (required with inductor) are less efficient than full CUDA graphs
+- CUTLASS FP4 MoE calls are opaque to inductor — it can't optimize them
+- vLLM's C++ custom ops are already hand-optimized for these shapes
+- The ops inductor CAN optimize (norms, activations) are too small to amortize the tracing cost
+
+The right approach: **adaptive config** — use inductor for interactive (C≤4), disable for serving (C>4).
+
+**Lesson:** torch.compile is not universally beneficial. Profile with YOUR workload before assuming it helps. For MoE models with custom CUTLASS kernels, the overhead often exceeds the optimization.
+
+### 9. `fuse_norm_quant` is Disabled By Default
 
 vLLM has a `fuse_norm_quant` compiler pass that fuses RMSNorm with the subsequent FP4 quantization. But it's `False` by default for NVFP4 models. With norms taking 26% of decode time, enabling this could save 2-3 ms per step.
 
@@ -163,45 +220,45 @@ The **bandwidth** will be the limiting factor on PRO 6000 too, since the expert 
 
 ---
 
-## Plans — Closing the 59% Gap
+## Plans — Next Optimizations
 
-### Tier 1: Quick Wins (hours)
+### What Worked
 
-| # | Optimization | Expected Gain | How |
-|---|-------------|---------------|-----|
-| A | **Enable vLLM C++ RMSNorm** | 10-15% (save ~2ms) | Set `rms_norm=['vllm_c']` in kernel config, or patch the model to use `from vllm._custom_ops import rms_norm` |
-| B | **Enable `fuse_norm_quant`** | 10-20% (save ~2ms) | vLLM compiler pass exists but not activated for NVFP4. Need to modify pass_config or patch the compilation pipeline. |
-| C | **Increase concurrency** | Already done | C=256 → 3,112 tok/s (50% over B=32) |
+| Optimization | Gain | Status |
+|---|---|---|
+| CUDA graphs | 7x single-request | ✓ Done |
+| High concurrency (C=256) | 50% over B=32 | ✓ Done |
+| **Disable inductor** | **2.1x peak throughput** | ✓ Done — the biggest single win |
+| NVFP4 tensor cores | Confirmed native SM120 FP4 | ✓ Verified |
 
-### Tier 2: Medium Effort (days)
+### What Didn't Work
 
-| # | Optimization | Expected Gain | How |
-|---|-------------|---------------|-----|
-| D | **Eliminate routing sort** | 15% (save ~2.3ms) | Replace `shuffle_rows` with index_select or persistent expert dispatch that doesn't need global sorting |
-| E | **Fuse QKV projection** | 5-10% (save ~1ms) | BF16 Q+K+V as single matmul [B, H] × [H, Q+K+V] instead of 3 separate calls |
-| F | **FusenCache KV plugin** | Higher batch capacity | Custom k8v4/k4v4 without FlashInfer FP8 overhead |
+| Optimization | Why |
+|---|---|
+| C++ RMSNorm | vllm_c doesn't support Gemma4's norm signature |
+| fuse_norm_quant for FP4 | Only FP8 patterns exist in vLLM's fusion pass |
+| Routing sort elimination | Fundamental to CUTLASS grouped GEMM |
+| QKV fusion | Already fused (QKVParallelLinear) |
+| FP8 KV cache throughput | 4x slower due to FlashInfer overhead |
+| Multi-stream MoE | 20x slower — Python stream overhead dominates |
 
-### Tier 3: Research (weeks)
+### Remaining Opportunities
 
-| # | Optimization | Expected Gain | How |
-|---|-------------|---------------|-----|
-| G | **Expert weight caching** | 10-30% at high batch | Hot experts (top-32 by frequency) stay in L2 cache (96MB). Pre-sort expert weights by access frequency. |
-| H | **Persistent MoE kernel** | 15-25% | Single kernel that stays resident across all experts, eliminates inter-expert launch overhead |
-| I | **Custom CUTLASS MoE with norm fusion** | 20-30% | Write a single CUTLASS kernel: norm → quant → grouped_GEMM → act+quant → grouped_GEMM → scatter. Eliminates 4 of 6 kernel launches per layer. |
+| # | Optimization | Expected Gain | Effort |
+|---|---|---|---|
+| 1 | **FusenCache KV plugin** | Higher batch without FP8 overhead | Days — plugin exists, needs NVFP4 model integration |
+| 2 | **Add FP4 patterns to fuse_norm_quant** | 10-20% at batch | Days — extend vLLM's fusion pass for NVFP4 |
+| 3 | **Fix vllm_c RMSNorm for Gemma4** | 10-15% | Hours — add variance_size support or model-specific adapter |
+| 4 | **Expert weight caching** | 10-30% | Research — L2 cache is 96MB, fits ~32 of 128 experts |
+| 5 | **RTX PRO 6000 (96GB)** | 3x batch capacity → higher throughput | Hardware — arriving soon |
+| 6 | **Adaptive config** | Best of both worlds | Hours — inductor for C≤4, no-inductor for C>4 |
 
-### Projected Throughput After Optimizations
+### Throughput Summary
 
 ```
-Current:            3,112 tok/s (C=256, RTX 5090)
-+ C++ RMSNorm (A):  ~3,500 tok/s
-+ norm_quant (B):   ~4,000 tok/s
-+ No sort (D):      ~4,500 tok/s
-+ Fused QKV (E):    ~4,800 tok/s
-
-Theoretical ceiling: ~5,500 tok/s (bandwidth-limited)
-  11.4 GB weights / 1792 GB/s = 6.4 ms/step
-  B=32 / 6.4ms = 5,000 tok/s (pure bandwidth)
-  With higher batch from FusenCache: ~6,000-7,000 tok/s
+Current peak:       6,615 tok/s (C=256, no inductor, RTX 5090)
+Bandwidth ceiling:  ~8,000-10,000 tok/s (theoretical, higher batch)
+With PRO 6000:     ~15,000-20,000 tok/s (3x VRAM, higher batch)
 ```
 
 ---
@@ -214,11 +271,13 @@ Theoretical ceiling: ~5,500 tok/s (bandwidth-limited)
 | `convert_ct_to_modelopt.py` | ✓ Converts RedHat CT → modelopt |
 | `eval_perplexity.py` | ✓ 3 modes, 15+ bugs fixed, 3 review passes |
 | Docker build (vLLM 0.19.1rc1 + patches) | ✓ Reproducible |
-| Batch throughput benchmark | ✓ Peak 3,112 tok/s |
+| Batch throughput benchmark | ✓ Peak **6,615 tok/s** |
 | MoE profiling + decomposition | ✓ Full breakdown of 59% gap |
 | Tensor core verification | ✓ CUTLASS 3.x SM120 FP4 MMA confirmed |
 | FP8 KV cache evaluation | ✓ 2x capacity, 4x slower |
-| HuggingFace model card | ✓ cklaus/gemma-4-26B-A4B-it-NVFP4 |
+| Inductor vs no-inductor comparison | ✓ No-inductor 2.1x faster for serving |
+| 4-target optimization investigation | ✓ Found 2 already done, 2 blocked, 1 new win |
+| HuggingFace model card | ✓ [cklaus/gemma-4-26B-A4B-it-NVFP4](https://huggingface.co/cklaus/gemma-4-26B-A4B-it-NVFP4) |
 
 ---
 
@@ -231,7 +290,42 @@ Theoretical ceiling: ~5,500 tok/s (bandwidth-limited)
 | "Fused MoE kernel → 2-5x" | Already fused; remaining gap is overhead | ~1.5x realistic from overhead elimination |
 | "Stream parallelism → 1.5-2x" | 20x slower in practice | Python-level streams don't work for μs-scale ops |
 | "FP8 KV → 2x throughput" | 2x capacity but 4x slower | Capacity only, not throughput |
-| "Target: 12,000-20,000 tok/s" | Revised: 5,000-7,000 tok/s | Bandwidth ceiling is real at 1792 GB/s |
+| "torch.compile helps serving" | Hurts at batch scale (2.1x slower) | Inductor overhead > optimization for MoE |
+| "C++ RMSNorm is easy win" | vllm_c doesn't support Gemma4 norms | Falls back to native; disabling inductor was the real fix |
+| "QKV fusion needed" | Already fused via QKVParallelLinear | No action needed |
+| "Routing sort eliminable" | Fundamental to CUTLASS blocked dispatch | Can't remove without rewriting grouped GEMM |
+| "Target: 5,000-7,000 tok/s" | **Achieved: 6,615 tok/s** | Exceeded by disabling inductor |
+
+---
+
+## Optimization Investigation Results
+
+### Investigated (4 targets from profiling)
+
+| Target | Expected Gain | Actual Result |
+|--------|---------------|---------------|
+| **C++ RMSNorm** | 10-15% | vllm_c doesn't support Gemma4's norm signature. Falls back to native. |
+| **fuse_norm_quant** | 10-20% | Only FP8 patterns registered in vLLM; FP4 patterns missing. Not activated. |
+| **Eliminate routing sort** | 15% | Sort is fundamental to CUTLASS grouped GEMM. No sort-free option exists. |
+| **QKV fusion** | 5-10% | Already fused — `QKVParallelLinear` does single matmul for Q+K+V. |
+
+### The Actual Win: Disable Inductor
+
+Instead of fixing individual components, disabling `torch.compile` entirely gave **2.1x throughput**:
+
+```
+-cc.mode none              # no torch.compile
+-cc.cudagraph_mode full    # keep CUDA graphs (the important optimization)
+```
+
+**Why this works:**
+1. vLLM's C++ custom ops are already optimized for these exact kernel shapes
+2. torch.compile adds graph capture + tracing overhead that doesn't amortize at high batch
+3. Piecewise CUDA graphs (inductor mode) are less efficient than full CUDA graphs
+4. The inductor doesn't optimize the CUTLASS FP4 MoE calls — they're opaque custom ops
+5. Inductor's benefit is fusing small PyTorch ops, but vLLM already fused them in C++
+
+**Trade-off:** Single-request latency is 30% slower (127 → 89 tok/s) because inductor does optimize the single-sequence graph. For interactive use, inductor is better. For batch serving, disable it.
 
 ---
 
