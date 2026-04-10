@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build artifacts
+/tmp/build_fusencache/
+*.cubin
+*.ptx
+
+# Benchmark / eval outputs
+*.json
+*.log
+*.tsv
+
+# Distribution / packaging
+*.tar.gz
+*.whl
+MANIFEST

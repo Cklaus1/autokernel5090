@@ -1,0 +1,168 @@
+model:
+  name: gemma-4-26B-A4B-it-NVFP4
+  path: /models/gemma-4-26B-A4B-it-NVFP4-modelopt
+  architecture: gemma4_moe
+  quantization: modelopt
+  weights_gb: 17
+  huggingface: cklaus/gemma-4-26B-A4B-it-NVFP4
+
+hardware:
+  gpu: rtx-pro-6000-max-q
+  gpu_variant: blackwell-sm120
+  memory_gb: 96           # per GPU
+  num_gpus: 2
+  total_memory_gb: 192
+  parallelism: dp2        # DP=2 (two independent servers) — NOT tensor parallel
+  interconnect: pcie      # PCIe only; NVLink not present
+  pcie_note: >
+    PCIe AllReduce costs 50-100 µs per all-reduce × 60 layers ≈ 3-6 ms per token.
+    DP=2 eliminates this entirely: zero inter-GPU communication.
+  tdp_per_gpu_w: 200      # Max-Q variant — lower than full PRO 6000 (300W)
+  hbm_bandwidth_gbs: 1792  # per GPU (verify on actual hardware)
+  sm_count: 170            # per GPU (verify on actual hardware)
+  l2_cache_mb: 96         # per GPU
+
+serving:
+  mode: throughput
+  inductor: false             # CRITICAL: disable for 2x batch throughput
+  cudagraph_mode: full        # capture full decode graph
+  max_model_len: 32768        # 32K context — 96GB makes this trivial even single-GPU
+  gpu_memory_utilization: 0.92
+  enforce_eager: false
+  max_num_seqs: 512           # per server (96GB single-GPU budget)
+  dtype: auto
+  tensor_parallel_size: 1     # DP=2: each server is single-GPU TP=1
+  disable_log_requests: true
+  # Launch: ./serve_gemma4_dp2.sh 32768
+  # Each server: python3 -m vllm.entrypoints.openai.api_server -cc.mode none -cc.cudagraph_mode full
+  # GPU 0 server: port 8000 (CUDA_VISIBLE_DEVICES=0)
+  # GPU 1 server: port 8001 (CUDA_VISIBLE_DEVICES=1)
+
+routing:
+  strategy: round_robin       # fusen_solver distributes across both backends
+  solver_config: fusen_solver_dp2_config.yaml
+  agents_total: 8             # 4 per GPU
+  agents_per_gpu: 4
+
+kv_cache:
+  dtype: bf16                 # default: best throughput, ample capacity at 96GB
+
+  # Per-GPU budgets (single-GPU server, not TP-sharded):
+  #   96 GB total
+  #  -17 GB model weights (full model per GPU — NOT halved, each GPU runs full model)
+  #   - 1 GB CUDA graphs
+  #   ~78 GB available for KV
+  per_gpu_available_gb: 78
+  per_gpu_bf16_tokens: 300000     # ~300K tokens at 32K context
+  per_gpu_fp8_tokens: 600000      # FP8 doubles capacity
+  per_gpu_fusen_tokens: 500000    # FusenCache FP8+int4 (2.67x), ~500K tokens/GPU
+
+  # Aggregate (both GPUs):
+  total_bf16_tokens: 600000       # ~600K tokens total BF16
+  total_fp8_tokens: 1200000       # ~1.2M tokens FP8
+  total_fusen_tokens: 1000000     # ~1M tokens FusenCache (conservative)
+
+  per_layer: null
+
+  tp2_comparison_note: >
+    With TP=2, model weights were sharded (8.5 GB/GPU), freeing ~8.5 GB/GPU for KV.
+    With DP=2, each GPU holds the full 17 GB model, leaving ~8.5 GB less for KV.
+    TP=2 BF16 KV was ~480K tokens; DP=2 BF16 KV is ~600K tokens total (300K per GPU).
+    DP=2 wins because the PCIe overhead outweighs the marginal KV improvement of TP=2.
+
+kernels:
+  fused_norm_quant: true
+  fused_add_residual: true
+  shuffle_quant_fusion: true    # Gemma4 MoE shuffle+quant fusion
+
+docker:
+  image: vllm-built
+  gpu0:
+    container_name: vllm-gpu0
+    port_host: 8000
+    port_container: 8000
+    gpus: '"device=0"'
+    memory_limit: 90g
+    cuda_visible_devices: "0"
+  gpu1:
+    container_name: vllm-gpu1
+    port_host: 8001
+    port_container: 8000
+    gpus: '"device=1"'
+    memory_limit: 90g
+    cuda_visible_devices: "1"
+  vllm_args_per_server:
+    - --quantization=modelopt
+    - --max-model-len=32768
+    - --gpu-memory-utilization=0.92
+    - --max-num-seqs=512
+    - -cc.mode=none
+    - -cc.cudagraph_mode=full
+  fusen_mount: /root/projects/autokernel/fusen_kv:/fusen/fusen_kv:ro
+  fusen_launch: python3 /fusen/fusen_kv/launch_vllm.py
+
+performance:
+  # All numbers below are PROJECTIONS. Fill in after day-one benchmarking.
+
+  # Single-GPU PRO 6000 projections (96GB, BF16 KV, 4K ctx):
+  single_gpu_c1_tok_s: 90         # similar to 5090 at small batch
+  single_gpu_c256_tok_s: 6500     # slightly higher than 5090 (no KV pressure at C=256)
+  single_gpu_c512_tok_s: 7000     # PRO 6000 advantage: 300K tokens → no pressure at C=512
+  single_gpu_peak_concurrency: 512
+
+  # DP=2 aggregate projections (zero communication overhead):
+  dp2_c512_per_gpu_tok_s: 7000    # each GPU at C=512
+  dp2_c1024_total_tok_s: 14000    # 2 × 7,000 aggregate
+  projected_peak_tok_s: 12000     # conservative (account for Max-Q TDP throttle)
+  projected_peak_concurrency_per_gpu: 512
+  projected_peak_concurrency_total: 1024
+  dp2_scaling_efficiency: 1.0     # ideally 100%: zero comm overhead (unlike TP=2 ~85%)
+
+  # Context scaling (DP=2 aggregate, C=128 per GPU):
+  ctx_4k_tok_s: 12000
+  ctx_8k_tok_s: 9000
+  ctx_16k_tok_s: 6000
+  ctx_32k_tok_s: 4000
+
+  # KV capacity (4K context, per GPU):
+  kv_tokens_per_gpu_bf16: 300000   # ~75x concurrency headroom at 4K
+  kv_tokens_per_gpu_fusen: 500000  # ~125x concurrency headroom at 4K
+
+  # FusenCache DP=2 projections:
+  fusen_total_kv_tokens: 1000000   # 1M tokens across both GPUs
+  fusen_max_concurrency_4k: 250    # per GPU (1M / 2 GPUs / 4K ctx = 125x each)
+
+  # Measured values (to be filled in):
+  kv_tokens_measured: 0
+  peak_tok_s_measured: 0
+  profiled: ''
+
+tp2_vs_dp2:
+  recommendation: dp2
+  reason: >
+    PCIe AllReduce at 50-100 µs per all-reduce × 60 decoder layers = 3-6 ms per step.
+    At C=1 this is a 30-60% latency penalty; at C=256 it is still 5-10%.
+    DP=2 has zero communication overhead: perfect linear scaling for throughput workloads.
+  when_tp2_is_better: >
+    TP=2 would be preferable only when a single request exceeds one GPU's KV capacity
+    (e.g., a 200K+ token context that cannot fit in 96 GB with the model loaded).
+    At 32K context this situation will not occur on the PRO 6000.
+  max_q_tdp_note: >
+    Both GPUs are Max-Q (~200W). DP=2 is symmetric: both GPUs run at identical load,
+    so Max-Q throttling affects both equally and does not create a bottleneck imbalance.
+    TP=2 with asymmetric full/Max-Q would gate throughput on the slower GPU.
+
+description: >
+  RTX PRO 6000 Max-Q DP=2: two independent 96GB servers, zero PCIe overhead,
+  projected 12,000 tok/s aggregate, ~600K BF16 / ~1M FusenCache token capacity.
+
+notes:
+  - 'DP=2: each GPU runs full model (17 GB), full KV budget, zero inter-GPU comm'
+  - 'PCIe makes TP=2 undesirable: 3-6 ms/step overhead vs zero for DP=2'
+  - 'BF16 KV: ~300K tokens per GPU (~600K total) — ample for high concurrency at 32K ctx'
+  - 'FusenCache: ~500K tokens per GPU (~1M total) — sustained C=250/GPU at 32K ctx'
+  - 'fusen_solver routes across both backends (round_robin, 4 agents per GPU)'
+  - 'Max-Q TDP (~200W): expect ~10-15% lower tok/s vs full PRO 6000 (300W)'
+  - 'Startup time: ~60-90s per server (single-GPU, no TP graph capture complexity)'
+  - 'Benchmark: bench_dp2.py --quick (first pass) then bench_dp2.py --compare-single'
+  - 'Performance numbers TBD — not yet benchmarked on actual hardware'

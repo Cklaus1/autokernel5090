@@ -1,26 +1,37 @@
-# RTX PRO 6000 TP=2 Performance Projections
+# RTX PRO 6000 Performance Projections: TP=2 and DP=2
 
 **Date:** 2026-04-09
 **Hardware arriving:** 1x RTX PRO 6000 (96GB) + 1x RTX PRO 6000 Max-Q (96GB), Blackwell SM120
-**Total VRAM:** 192 GB
+**Total VRAM:** 192 GB (96 GB × 2)
+**Interconnect:** PCIe only — NVLink is NOT present
 **Reference:** RTX 5090 (32GB) single-GPU measured data
+
+> **Recommendation: Use DP=2, not TP=2.**
+> PCIe AllReduce costs 50-100 µs per all-reduce × 60 decoder layers = 3-6 ms per token.
+> DP=2 has zero communication overhead and scales perfectly for throughput workloads.
+> See the [DP=2 section](#dp2-data-parallel-two-independent-servers) below.
 
 ---
 
 ## Hardware Comparison
 
-| Spec              | RTX 5090 (current)  | RTX PRO 6000 (x2, TP=2)           |
+| Spec              | RTX 5090 (current)  | RTX PRO 6000 Max-Q (x2, DP=2)      |
 |-------------------|---------------------|-------------------------------------|
-| VRAM              | 32 GB               | 192 GB total (6x)                   |
+| VRAM              | 32 GB               | 192 GB total (96 GB × 2)            |
 | Architecture      | Blackwell SM120     | Blackwell SM120 (same)              |
-| HBM bandwidth     | 1792 GB/s           | 1792 GB/s per GPU (3584 GB/s total) |
+| HBM bandwidth     | 1792 GB/s           | 1792 GB/s per GPU (independent)     |
 | SM count          | 170 per GPU         | ~170 per GPU (to verify)            |
-| TDP               | 575 W               | ~300 W (Full) + ~200 W (Max-Q)      |
-| Tensor parallelism| 1                   | 2 (NCCL AllReduce)                  |
-| Interconnect      | N/A                 | NVLink or PCIe (NVLink preferred)   |
+| TDP               | 575 W               | ~200 W each (Max-Q variant)         |
+| Parallelism       | 1                   | DP=2 (two independent servers)      |
+| Interconnect      | N/A                 | PCIe only (no NVLink)               |
+| Inter-GPU comm    | N/A                 | None for DP=2 (zero overhead)       |
 
-**Note:** The Max-Q variant runs at lower TDP (~200 W vs ~300 W). With asymmetric TDPs,
-TP=2 will be gated by the slower GPU — the Max-Q. Measure per-GPU utilization on day one.
+**Max-Q TDP note:** Both GPUs are the Max-Q variant (~200 W vs full PRO 6000's 300 W).
+For DP=2 this is symmetric — both GPUs operate at the same load, so neither throttles
+the other. Expect ~10-15% lower throughput vs full PRO 6000, but no bottleneck imbalance.
+
+For TP=2 (hypothetical), asymmetric full/Max-Q TDP would gate throughput on the Max-Q.
+This is an additional argument against TP=2 on this specific hardware.
 
 ---
 

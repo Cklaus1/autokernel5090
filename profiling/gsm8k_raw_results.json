@@ -1,0 +1,363 @@
+{
+  "timestamp": "2026-04-10T13:37:02.874715",
+  "model": "/models/gemma-4-26B-A4B-it-NVFP4-modelopt",
+  "api": "http://172.17.0.2:8000/v1",
+  "correct": 0,
+  "total": 35,
+  "errors": 35,
+  "accuracy_pct": 0.0,
+  "elapsed_s": 0.0,
+  "avg_latency_s": 0.0,
+  "results": [
+    {
+      "problem_idx": 1,
+      "question": "Janet's ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for her friends every day with four. She sells every remaining egg at the farmers' market daily for $2 per fresh duck egg. How much in dollars does she make every day at the farmers' market?",
+      "expected": "18",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 2,
+      "question": "A robe takes 2 bolts of blue fiber and half that much white fiber. How many bolts in total does it take?",
+      "expected": "3",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 3,
+      "question": "Josh decides to try flipping a house. He buys a house for $80,000 and then puts in $50,000 in repairs. This increased the value of the house by 150%. How much profit did he make?",
+      "expected": "70000",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 4,
+      "question": "James decides to run 3 sprints 3 times a week. He runs 60 meters each sprint. How many total meters does he run a week?",
+      "expected": "540",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 5,
+      "question": "Every day, Wendi feeds each of her chickens three cups of mixed chicken feed. She gives the chickens their feed in three separate meals. In the morning, she gives her flock of chickens 15 cups of feed. In the afternoon she gives her chickens another 25 cups of feed. How many cups of feed does she need to give her chickens in the final meal of the day if the size of Wendi's flock is 20 chickens?",
+      "expected": "20",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 6,
+      "question": "Kylar went to the store to buy glasses for his new apartment. One glass costs $5, but every second glass costs only 60% of the price. Kylar wants to buy 16 glasses. How much does he need to pay for them?",
+      "expected": "56",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 7,
+      "question": "Toulouse has twice as many sheep as Charleston. Charleston has 4 times as many sheep as Seattle. How many sheep do Toulouse, Charleston, and Seattle have together if Seattle has 20 sheep?",
+      "expected": "260",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 8,
+      "question": "Tom bought his house for $150,000. The value of the house increases by 20% every year. How much is the house worth after 3 years in whole dollars?",
+      "expected": "259200",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 9,
+      "question": "Carrie works 8 hours a day at $14 per hour. She is also paid for 1 hour of overtime at 1.5 times her regular pay each day. How much does she make in a 5-day workweek?",
+      "expected": "645",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 10,
+      "question": "A store sells apples for $1.50 each and oranges for $2.00 each. If Sara buys 4 apples and 3 oranges, how much does she spend in total?",
+      "expected": "12",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 11,
+      "question": "Maria has 3 times as many coins as Luis. Luis has 24 coins. How many coins do Maria and Luis have together?",
+      "expected": "96",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 12,
+      "question": "A school has 500 students. 60% of the students are girls. How many boys are there in the school?",
+      "expected": "200",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 13,
+      "question": "Mike needs to buy 5 shirts for work. The shirts are normally $30 each but are on sale for 20% off. How much will Mike spend in total?",
+      "expected": "120",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 14,
+      "question": "Sam has $50 and spends $18 on a book and $12 on lunch. How much money does Sam have left?",
+      "expected": "20",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 15,
+      "question": "There are 12 apples in a basket. 3 friends want to share them equally. How many apples does each friend get?",
+      "expected": "4",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 16,
+      "question": "Jake earns $15 per hour working at a grocery store. He works 40 hours a week. How much does he earn in a 4-week month?",
+      "expected": "2400",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 17,
+      "question": "A box contains 24 chocolates. If 8 children each take 2 chocolates, how many chocolates are left in the box?",
+      "expected": "8",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 18,
+      "question": "Lisa reads 30 pages every day. How many pages will she read in 2 weeks?",
+      "expected": "420",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 19,
+      "question": "A swimming pool holds 5000 gallons of water. It loses 100 gallons per day due to evaporation. After 10 days, how many gallons are left?",
+      "expected": "4000",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 20,
+      "question": "Mark scored 85, 90, 78, and 95 on four tests. What is his average score? Round to nearest whole number.",
+      "expected": "87",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 21,
+      "question": "A garden has 8 rows of flowers with 15 flowers per row. If 20 flowers are removed, how many flowers are left?",
+      "expected": "100",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 22,
+      "question": "Tom has twice as much money as Jane. Together they have $90. How much money does Tom have?",
+      "expected": "60",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 23,
+      "question": "A train station sells 120 tickets on Monday, 95 on Tuesday, and 130 on Wednesday. What is the total number of tickets sold over these three days?",
+      "expected": "345",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 24,
+      "question": "Sarah can type 60 words per minute. How many words can she type in 45 minutes?",
+      "expected": "2700",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 25,
+      "question": "A baker makes 144 muffins and packs them into boxes of 12. How many boxes does the baker need?",
+      "expected": "12",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 26,
+      "question": "A factory produces 250 widgets per day. It operates 5 days a week. How many widgets does it produce in 4 weeks?",
+      "expected": "5000",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 27,
+      "question": "Emma has 15 red marbles and 20 blue marbles. If she gives away 8 red marbles and 5 blue marbles, how many marbles does she have in total?",
+      "expected": "22",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 28,
+      "question": "A pizza is cut into 8 slices. If 3 people each eat 2 slices, how many slices are left?",
+      "expected": "2",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 29,
+      "question": "A concert venue has 2000 seats. For a show, 85% of the seats are filled. How many people are at the concert?",
+      "expected": "1700",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 30,
+      "question": "A car uses 8 liters of fuel per 100 km. How many liters does it need for a 350 km journey?",
+      "expected": "28",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 31,
+      "question": "There are 7 days in a week and 52 weeks in a year. How many days are in a year?",
+      "expected": "364",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 32,
+      "question": "A farmer has 120 apples. He sells 3/4 of them at the market. How many apples does he have left?",
+      "expected": "30",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 33,
+      "question": "A class has 30 students. 40% scored above 80 on the test. How many students scored above 80?",
+      "expected": "12",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 34,
+      "question": "David saves $25 per week. How much will he have saved after 8 weeks?",
+      "expected": "200",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    },
+    {
+      "problem_idx": 35,
+      "question": "A rectangle has a length of 12 cm and a width of 7 cm. What is the area of the rectangle in square cm?",
+      "expected": "84",
+      "predicted": "ERROR",
+      "raw_response": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+      "correct": false,
+      "latency_s": 0.0,
+      "error": "HTTPConnectionPool(host='172.17.0.2', port=8000): Max retries exceeded with url: /v1/chat/completions (Caused by NewConnectionError(\"HTTPConnection(host='172.17.0.2', port=8000): Failed to establish a new connection: [Errno 111] Connection refused\"))"
+    }
+  ]
+}

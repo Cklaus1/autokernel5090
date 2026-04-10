@@ -1,0 +1,72 @@
+# fusen_solver_dp2_config.yaml
+# DP=2 routing config for fusen_solver on 2x RTX PRO 6000 Max-Q (PCIe)
+#
+# Two independent vLLM servers — one per GPU. The solver distributes requests
+# across both backends using round-robin. No inter-GPU communication occurs.
+#
+# Launch servers first:
+#   ./serve_gemma4_dp2.sh 32768 fusen fusen
+#
+# Then run the solver:
+#   python -m fusen_solver --config fusen_solver_dp2_config.yaml
+
+backends:
+  gpu0:
+    type: vllm
+    url: http://localhost:8000/v1
+    model: gemma4-nvfp4
+    supports_batch: true
+    max_context: 32768
+    # Per-GPU capacity: ~300K tokens BF16, ~500K tokens FusenCache
+    notes: "GPU 0, CUDA_VISIBLE_DEVICES=0, port 8000"
+
+  gpu1:
+    type: vllm
+    url: http://localhost:8001/v1
+    model: gemma4-nvfp4
+    supports_batch: true
+    max_context: 32768
+    notes: "GPU 1, CUDA_VISIBLE_DEVICES=1, port 8001"
+
+strategy:
+  # 8 total agents split evenly: 4 per GPU
+  # Each agent fires requests concurrently; the solver multiplexes across both backends.
+  default_n: 8
+  auto_n: true           # auto-tune N based on observed latency and queue depth
+  routing: round_robin   # round_robin | least_loaded | random
+
+  # Affinity: keep long-running sessions pinned to one backend (for prefix cache hits)
+  session_affinity: true
+  affinity_ttl_s: 300    # re-route session after 5 min idle
+
+  # Load balancing thresholds
+  least_loaded_threshold: 0.8   # switch to least-loaded if one backend exceeds 80% queue
+  max_retries: 2                 # retry on 429/503 from one backend before failing over
+
+  # Concurrency hints (used by auto_n tuner)
+  per_backend_target_concurrency: 128   # 4 agents × ~32 in-flight each
+
+timeouts:
+  connect_s: 5
+  request_s: 120      # single-request timeout (generous for 32K context)
+  health_check_interval_s: 10
+
+health:
+  # Monitor both backends; remove from rotation if /health fails 3x
+  check_url_path: /health
+  failure_threshold: 3
+  recovery_threshold: 2
+  check_interval_s: 10
+
+aggregate:
+  # Reporting
+  log_per_backend_stats: true
+  stats_window_s: 60          # rolling 60s window for throughput stats
+  report_interval_s: 300      # print aggregate report every 5 min
+
+notes:
+  - "PCIe interconnect: DP=2 avoids all NCCL AllReduce (3-6ms overhead per step)"
+  - "Each GPU runs fully independently: 96GB VRAM, full model weights, full KV cache"
+  - "FusenCache KV: ~500K tokens per GPU = ~1M tokens total (vs 300K BF16 per GPU)"
+  - "Aggregate throughput: ~12,000 tok/s at peak (2x 6,000 single-GPU)"
+  - "When to use TP=2 instead: single request > one GPU's KV capacity (rare at 32K ctx)"
