@@ -1,0 +1,260 @@
+# fusen_solver_moa_config.yaml
+# Mixture of Agents (MoA) config for fusen_solver on 2x RTX PRO 6000 Max-Q
+#
+# GPU 0 (port 8000): Gemma4 26B NVFP4 + FusenCache — STRONG backend
+# GPU 1 (port 8001): Qwen3.5-9B (or Gemma4 E2B) — FAST backend
+#
+# Launch servers first:
+#   CUDA_VISIBLE_DEVICES=0 python -m vllm.entrypoints.openai.api_server \
+#     --model gemma4-26b-nvfp4 --port 8000 &
+#   CUDA_VISIBLE_DEVICES=1 python -m vllm.entrypoints.openai.api_server \
+#     --model Qwen/Qwen2.5-Coder-7B-Instruct --port 8001 &
+#
+# Then run the solver:
+#   python -m fusen_solver --config fusen_solver_moa_config.yaml
+
+# ---------------------------------------------------------------------------
+# Backend definitions
+# ---------------------------------------------------------------------------
+
+backends:
+  strong:
+    type: vllm
+    url: http://localhost:8000/v1
+    model: gemma4-26b-nvfp4
+    supports_batch: true
+    max_context: 32768
+    # ~121 tok/s single-user with FusenCache; 96GB VRAM, ~500K token KV budget
+    notes: "GPU 0, CUDA_VISIBLE_DEVICES=0, Gemma4 26B NVFP4 + FusenCache"
+
+  fast:
+    type: vllm
+    url: http://localhost:8001/v1
+    model: Qwen/Qwen2.5-Coder-7B-Instruct   # swap to gemma4-e2b for max speed
+    supports_batch: true
+    max_context: 32768
+    # ~240 tok/s estimated; 96GB VRAM (model uses ~18GB, rest is KV)
+    notes: "GPU 1, CUDA_VISIBLE_DEVICES=1, Qwen3.5-9B (or Gemma4 E2B)"
+    # Alternatives for GPU 1:
+    #   model: gemma4-e2b     # ~300-350 tok/s, lower quality — use for formatting-heavy workloads
+    #   model: qwen3.5-9b     # ~240 tok/s, better at code — recommended default
+
+# ---------------------------------------------------------------------------
+# Routing configuration
+# ---------------------------------------------------------------------------
+
+routing:
+  mode: mixture_of_agents       # mixture_of_agents | round_robin | strong_only | fast_only
+
+  # Task difficulty classifier
+  # Options: keyword (free, instant), embedding (semantic, requires model), llm (accurate, costly)
+  classifier: keyword
+
+  # Keyword routing rules (applied in order; first match wins)
+  keyword_rules:
+
+    # Hard tasks → strong backend
+    - pattern: "architect|design|refactor.*large|multi.?step|complex.*algorithm"
+      backend: strong
+    - pattern: "security|audit|race.?condition|concurrency|distributed"
+      backend: strong
+    - pattern: "optimize.*system|performance.*analysis|root.?cause|trade.?off"
+      backend: strong
+    - pattern: "rewrite|redesign|from.?scratch"
+      backend: strong
+
+    # Easy tasks → fast backend
+    - pattern: "format|translate|summarize|list|convert|rename|reorder|sort"
+      backend: fast
+    - pattern: "what.?is|define|explain.?briefly|scaffold|boilerplate|stub"
+      backend: fast
+    - pattern: "add.?comment|docstring|type.?hint|changelog|release.?note"
+      backend: fast
+
+    # Default: medium tasks go to fast (with cascade enabled)
+    - default: fast              # fast + cascade on failure → strong
+
+  # Context length threshold: route to strong if context exceeds this (tokens)
+  # Long context benefits from the 26B model's better long-range coherence
+  long_context_threshold_tokens: 16384
+  long_context_backend: strong
+
+  # Cascade fallback: if fast model output fails quality check, retry on strong
+  cascade:
+    enabled: true
+    # Fast-model timeout before cascade fires (seconds)
+    fast_timeout_s: 45
+    # Minimum response length to count as valid (chars)
+    min_response_length: 80
+    # If response has no code block for a code task, trigger cascade
+    require_code_block: true
+    # Cascade retry budget: if >N cascades/min, log a warning (fast model degraded)
+    cascade_rate_warn_threshold: 0.20   # warn if >20% of fast-routed tasks cascade
+
+# ---------------------------------------------------------------------------
+# Strategy-to-backend affinity
+# ---------------------------------------------------------------------------
+# Maps fusen_solver strategy names to preferred backend.
+# Overrides keyword classifier; still subject to cascade if output is bad.
+
+strategy_routing:
+  # Fast backend strategies (low-depth, template-driven)
+  direct: fast
+  incremental: fast
+  test_first: fast
+  prototype_then_refine: fast   # prototype phase on fast; use cascade for refine phase
+
+  # Strong backend strategies (deep reasoning required)
+  alternative: strong
+  decompose: strong
+  review: strong
+  research: strong
+  rewrite: strong
+  adversarial: strong
+  profile_first: strong
+  security: strong
+
+# ---------------------------------------------------------------------------
+# Agent pool allocation (for parallel solver, default_n total agents)
+# ---------------------------------------------------------------------------
+
+agent_allocation:
+  # How to split N parallel agents across backends given task difficulty
+  hard:
+    strong_fraction: 0.67     # 4 of 6 agents on strong
+    fast_fraction: 0.33       # 2 of 6 agents on fast (direct + test_first as sanity checks)
+    strong_strategies:
+      - review
+      - research
+      - decompose
+      - alternative
+    fast_strategies:
+      - direct
+      - test_first
+
+  medium:
+    strong_fraction: 0.33     # 2 of 6 agents on strong
+    fast_fraction: 0.67       # 4 of 6 agents on fast
+    strong_strategies:
+      - research
+      - adversarial
+    fast_strategies:
+      - direct
+      - test_first
+      - incremental
+      - prototype_then_refine
+
+  easy:
+    strong_fraction: 0.0      # skip strong entirely
+    fast_fraction: 1.0
+    fast_strategies:
+      - direct
+      - test_first
+      - incremental
+      - direct             # run direct twice for majority-vote deduplication
+
+# ---------------------------------------------------------------------------
+# Parallel solver settings
+# ---------------------------------------------------------------------------
+
+strategy:
+  default_n: 6               # total agents per problem
+  auto_n: true               # tune N based on observed latency and queue depth
+
+  # If strong backend queue exceeds this depth, route MEDIUM tasks to fast
+  # to avoid head-of-line blocking on hard tasks
+  strong_queue_overflow_threshold: 8
+  overflow_action: route_medium_to_fast
+
+  # Prefix cache behavior: each GPU maintains its own prefix cache (DP=2)
+  # Agents on the same GPU for the same problem share the context prefix
+  session_affinity: true
+  affinity_ttl_s: 300
+
+# ---------------------------------------------------------------------------
+# Timeouts and health
+# ---------------------------------------------------------------------------
+
+timeouts:
+  connect_s: 5
+  request_s: 120             # per-request timeout (generous for 32K context)
+  cascade_fast_deadline_s: 45
+  health_check_interval_s: 10
+
+health:
+  check_url_path: /health
+  failure_threshold: 3
+  recovery_threshold: 2
+  check_interval_s: 10
+  # Degraded mode behavior when a backend is down
+  strong_down_action: route_all_to_fast_with_warning
+  fast_down_action: route_all_to_strong   # no cascade needed, strong handles everything
+
+# ---------------------------------------------------------------------------
+# Observability
+# ---------------------------------------------------------------------------
+
+logging:
+  log_routing_decisions: true   # log which backend was chosen and why
+  log_cascade_events: true      # log every cascade fallback
+  log_per_backend_stats: true
+  stats_window_s: 60            # rolling 60s window for throughput metrics
+  report_interval_s: 300        # print aggregate report every 5 min
+
+  # Metrics tracked per backend
+  metrics:
+    - requests_total
+    - cascade_count
+    - cascade_rate
+    - mean_latency_ms
+    - p95_latency_ms
+    - tokens_per_second
+    - queue_depth
+
+# ---------------------------------------------------------------------------
+# Learning engine integration
+# ---------------------------------------------------------------------------
+
+learning:
+  enabled: true
+  db_path: ~/.fusen_solver/history.json
+  min_data_for_adaptation: 20
+
+  # Feed routing outcomes to the learning engine
+  # After N decisions, the engine can suggest threshold adjustments
+  routing_feedback: true
+  # If fast-routed tasks have accept_rate < threshold, auto-escalate that
+  # task category to strong backend
+  auto_escalate_accept_rate_threshold: 0.60
+
+# ---------------------------------------------------------------------------
+# Notes
+# ---------------------------------------------------------------------------
+
+notes:
+  hardware:
+    - "DP=2: each GPU runs fully independently, no NCCL, no PCIe bandwidth cost for MoA routing"
+    - "GPU 0: 96GB VRAM, Gemma4 26B NVFP4 uses ~52GB, leaves ~44GB for KV (FusenCache: ~500K tokens)"
+    - "GPU 1: 96GB VRAM, Qwen3.5-9B uses ~18GB, leaves ~78GB for KV (~2M tokens at fp8)"
+
+  performance:
+    - "Strong backend: 121 tok/s single-user (FusenCache measured)"
+    - "Fast backend (Qwen): ~240 tok/s estimated"
+    - "Fast backend (E2B): ~300-350 tok/s estimated, lower code quality"
+    - "MoA overhead: ~0ms (CPU-side keyword match, no GPU involved)"
+    - "Cascade worst case: 2x latency (fast timeout + strong full run)"
+
+  model_selection_gpu1:
+    - "Qwen3.5-9B: recommended default — code-optimized, cascade rate <10% observed on code tasks"
+    - "Gemma4 E2B: preferred when workload is >70% EASY (formatting/translation)"
+    - "Switching: change 'model' field in fast backend and restart GPU 1 server"
+
+  when_to_use_strong_only:
+    - "Security-critical code reviews — never trust fast model alone"
+    - "Architecture decisions with long-lived consequences"
+    - "Debugging CUDA/Triton kernel crashes (nuanced hardware behavior)"
+
+  when_to_use_fast_only:
+    - "CI docstring/type-hint generation (bulk, low-stakes)"
+    - "Translation or formatting pipelines"
+    - "Interactive chat where latency < 300ms is required"
