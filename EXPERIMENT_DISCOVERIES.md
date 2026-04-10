@@ -217,3 +217,9 @@ Current:                    6,685 tok/s (FusenCache eager)
 **Found:** hidden_size mismatch (5376 vs 2816) — fatal. Both RedHatAI and thoughtworks EAGLE3 drafts are 31B-specific.
 **Options:** Train 26B-specific EAGLE3 draft (1-2 days GPU, ~200M params) or use n-gram (zero cost, ~1.2x).
 **Note:** Gemma4 9B also mismatches (hidden_size=3840). The 26B MoE has unique dimensions.
+
+## Discovery #35: Cooperative groups work on SM120, 278μs per grid.sync()
+**Expected:** Persistent MoE kernel eliminates all inter-kernel overhead
+**Found:** grid.sync() costs 278μs per barrier across 170 SMs. With 4 barriers per MoE layer, that's ~1ms overhead — comparable to what CUDA graphs already save.
+**Result:** Persistent kernel IS viable but marginal gain over CUDA graphs. Main value: proves cooperative launch works on consumer Blackwell for future mega-graph concept.
+**Bug found:** Phase 6 unshuffle has race condition for multi-topk accumulation (needs atomicAdd).
