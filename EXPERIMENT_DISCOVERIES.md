@@ -352,3 +352,9 @@ RIGHT approach (what we learned):
 - FP8 attention improvement (KV layout constraint)
 - DeepGemm on SM120 (binary incompatible)
 - Cross-layer KV sharing
+
+## Discovery #42: N-gram spec decode -49% even at n=1, content type irrelevant
+**Previous retry:** n=4 was -11%. Hypothesis: lower n + repetitive content would help.
+**Retried:** n=2 (-49%), n=1 (-49%). Repetitive JSON/HTML = same as novel code.
+**Root cause:** CUDA graph full mode is optimized for standard decode shapes. Speculative decode introduces variable batch sizes that break graph reuse. Overhead is structural, not proportional to n.
+**FINAL VERDICT:** N-gram speculative decoding is completely dead for NVFP4+CUDA graphs. The 123 tok/s baseline is optimal for single-user AR decode.
