@@ -63,28 +63,35 @@ def _patch_cache_dtype():
         if hasattr(config_cls, '__annotations__'):
             config_cls.__annotations__['cache_dtype'] = new_cache_dtype
 
-        # Step 3: Rebuild pydantic model to pick up new annotation
-        # For pydantic v2 dataclass-style configs, we need to rebuild
-        try:
-            if hasattr(config_cls, 'model_rebuild'):
-                config_cls.model_rebuild()
-            elif hasattr(config_cls, '__pydantic_complete__'):
-                # Force re-validation schema
-                config_cls.__pydantic_complete__ = False
-        except Exception:
-            pass  # Non-critical — validation may still work via our bypass
+        # Step 3: Patch CacheConfig.__init__ to bypass pydantic Literal validation
+        # for FusenKV dtypes. Pydantic v2 compiles validators at class definition
+        # time, so updating annotations alone doesn't work. We wrap __init__ to
+        # temporarily use 'auto' during pydantic validation, then restore our dtype.
+        original_init = config_cls.__init__
+
+        def _patched_init(self, *args, **kwargs):
+            cache_dtype = kwargs.get('cache_dtype', None)
+            if cache_dtype in FUSEN_DTYPES:
+                kwargs['cache_dtype'] = 'auto'
+                original_init(self, *args, **kwargs)
+                object.__setattr__(self, 'cache_dtype', cache_dtype)
+            else:
+                original_init(self, *args, **kwargs)
+
+        config_cls.__init__ = _patched_init
 
         # Step 4: Patch the validator to pass through our dtypes
-        original_validate = cache_mod.CacheConfig._validate_cache_dtype.__func__
+        if hasattr(cache_mod.CacheConfig, '_validate_cache_dtype'):
+            original_validate = cache_mod.CacheConfig._validate_cache_dtype.__func__
 
-        @classmethod  # type: ignore
-        def _patched_validate(cls, cache_dtype):
-            if cache_dtype in FUSEN_DTYPES:
-                logger.info("FusenKV: using '%s' KV cache format", cache_dtype)
-                return cache_dtype
-            return original_validate(cls, cache_dtype)
+            @classmethod  # type: ignore
+            def _patched_validate(cls, cache_dtype):
+                if cache_dtype in FUSEN_DTYPES:
+                    logger.info("FusenKV: using '%s' KV cache format", cache_dtype)
+                    return cache_dtype
+                return original_validate(cls, cache_dtype)
 
-        cache_mod.CacheConfig._validate_cache_dtype = _patched_validate
+            cache_mod.CacheConfig._validate_cache_dtype = _patched_validate
 
         # Step 5: Patch arg_utils to accept our strings in CLI
         try:
@@ -138,6 +145,94 @@ def _patch_backend_selection():
         logger.warning("FusenKV: backend selection patch failed: %s", e)
 
 
+def _patch_dtype_mapping():
+    """Add FusenKV dtype strings to vLLM's STR_DTYPE_TO_TORCH_DTYPE mapping.
+
+    vLLM uses this mapping in kv_cache_dtype_str_to_dtype() to convert the
+    --kv-cache-dtype CLI string to a torch dtype. FusenKV stores cache as
+    uint8 packed bytes.
+    """
+    try:
+        from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE
+        import torch
+        for dtype_str in FUSEN_DTYPES:
+            if dtype_str not in STR_DTYPE_TO_TORCH_DTYPE:
+                STR_DTYPE_TO_TORCH_DTYPE[dtype_str] = torch.uint8
+        logger.info("FusenKV: patched STR_DTYPE_TO_TORCH_DTYPE with %d entries",
+                     len(FUSEN_DTYPES))
+    except Exception as e:
+        logger.warning("FusenKV: dtype mapping patch failed: %s", e)
+
+
+def _patch_kv_cache_spec():
+    """Patch vLLM's KV cache spec to use correct page sizes for FusenKV.
+
+    vLLM's real_page_size_bytes formula assumes standard BF16 KV layout:
+        2 * block_size * num_kv_heads * head_size * dtype_size
+    For FusenKV with sub-byte K+V, the actual bytes per page are much smaller.
+
+    We need two patches:
+    1. Override real_page_size_bytes property on AttentionSpec to use correct
+       formula when page_size_padded carries our custom marker.
+    2. Patch Attention.get_kv_cache_spec to set page_size_padded to the true size.
+
+    The assertion `page_size_padded >= real_page_size` prevents us from just
+    setting page_size_padded smaller, so we must fix real_page_size_bytes too.
+    """
+    try:
+        from vllm.v1.kv_cache_interface import (
+            AttentionSpec, FullAttentionSpec, SlidingWindowSpec,
+        )
+
+        # Patch 1: Override real_page_size_bytes on ALL spec classes.
+        # For FusenCache (dtype=uint8, custom kv_cache_dtype), the page formula
+        # should use slot_bytes (0.5*D for K + 0.5*D for V for k4v4) instead of
+        # the default 2*head_size*dtype_size.
+        # We detect FusenCache specs by dtype=uint8 (no standard backend uses uint8).
+        import torch as _torch
+
+        # We need slot_bytes(D) for FusenCache. For k4v4: 0.5*D + 0.5*D = D.
+        # For k8v4: 1*D + 0.5*D = 1.5*D. For k8v8: 1*D + 1*D = 2*D.
+        # We compute this from the kv_cache_dtype in the vllm config.
+        _fusen_slot_bytes_cache = {}
+
+        def _get_fusen_slot_bytes(head_size):
+            """Get slot bytes per token per head for FusenCache."""
+            if head_size not in _fusen_slot_bytes_cache:
+                try:
+                    from vllm.config import get_current_vllm_config
+                    cfg = get_current_vllm_config()
+                    cache_dtype = cfg.cache_config.cache_dtype
+                    from fusen_kv.spec_resolver import resolve_spec as _resolve
+                    spec = _resolve(cache_dtype)
+                    _fusen_slot_bytes_cache[head_size] = spec.slot_bytes(head_size)
+                except Exception:
+                    # Fallback: k4v4 default (0.5 + 0.5) * D = D bytes per slot
+                    _fusen_slot_bytes_cache[head_size] = head_size
+            return _fusen_slot_bytes_cache[head_size]
+
+        for spec_cls in (AttentionSpec, FullAttentionSpec):
+            if 'real_page_size_bytes' not in spec_cls.__dict__:
+                continue
+            original_fn = spec_cls.__dict__['real_page_size_bytes'].fget
+
+            def _make_patched(orig):
+                @property
+                def _patched(self):
+                    if self.dtype == _torch.uint8:
+                        # FusenCache: use slot_bytes instead of standard formula
+                        slot_bytes = _get_fusen_slot_bytes(self.head_size)
+                        return self.block_size * self.num_kv_heads * slot_bytes
+                    return orig(self)
+                return _patched
+
+            spec_cls.real_page_size_bytes = _make_patched(original_fn)
+            logger.info("FusenKV: patched %s.real_page_size_bytes",
+                         spec_cls.__name__)
+    except Exception as e:
+        logger.warning("FusenKV: kv_cache_spec patch failed: %s", e)
+
+
 def _register_startup_hook():
     """Register a warmup hook to precompile Triton kernels on first use.
 
@@ -179,7 +274,13 @@ def register():
         # Step 3: Patch backend selection
         _patch_backend_selection()
 
-        # Step 4: Startup hooks
+        # Step 4: Patch dtype string → torch.dtype mapping
+        _patch_dtype_mapping()
+
+        # Step 5: Patch KV cache spec for correct page sizing
+        _patch_kv_cache_spec()
+
+        # Step 6: Startup hooks
         _register_startup_hook()
 
         logger.info("FusenKV plugin v0.1.0 loaded successfully")

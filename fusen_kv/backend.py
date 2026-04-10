@@ -51,12 +51,13 @@ class FusenKVMetadata(AttentionMetadata):
     # Slot mapping: [num_tokens] -- for store during prefill
     slot_mapping: torch.Tensor | None = None
 
-    # Whether this is a prefill (store KV) or decode (read KV) step
-    is_prefill: bool = False
+    # Query start locations: [batch+1] -- for computing per-request query ranges
+    query_start_loc: torch.Tensor | None = None
 
-    # Number of prefill tokens (for mixed prefill+decode batches)
-    num_prefill_tokens: int = 0
-    num_decode_tokens: int = 0
+    # Total number of tokens and requests
+    num_actual_tokens: int = 0
+    num_reqs: int = 0
+    max_query_len: int = 0
 
     # For cascade attention (not supported yet)
     use_cascade: bool = False
@@ -101,33 +102,58 @@ class FusenKVMetadataBuilder(AttentionMetadataBuilder[FusenKVMetadata]):
             if compilation_config else 0
         )
 
-    def reuse_metadata(self, metadata: FusenKVMetadata,
-                       num_tokens: int) -> FusenKVMetadata:
-        return metadata
+    def update_block_table(
+        self,
+        metadata: FusenKVMetadata,
+        blk_table: torch.Tensor,
+        slot_mapping: torch.Tensor,
+    ) -> FusenKVMetadata:
+        """Update block table and slot mapping for a different KV cache group.
+
+        Creates a new metadata instance sharing all fields except the
+        block table and slot mapping, which differ per cache group.
+        """
+        return FusenKVMetadata(
+            block_table=blk_table,
+            seq_lens=metadata.seq_lens,
+            slot_mapping=slot_mapping,
+            query_start_loc=metadata.query_start_loc,
+            num_actual_tokens=metadata.num_actual_tokens,
+            num_reqs=metadata.num_reqs,
+            max_query_len=metadata.max_query_len,
+        )
 
     def build_for_cudagraph_capture(
-        self, common_prefix_metadata
+        self, common_attn_metadata,
     ) -> FusenKVMetadata:
         """Build metadata for CUDA graph capture (max sizes, decode-only)."""
+        m = common_attn_metadata
         return FusenKVMetadata(
-            num_prefill_tokens=0,
-            num_decode_tokens=0,
+            block_table=m.block_table_tensor,
+            seq_lens=m.seq_lens,
+            slot_mapping=m.slot_mapping,
+            query_start_loc=m.query_start_loc,
+            num_actual_tokens=m.num_actual_tokens,
+            num_reqs=m.num_reqs,
+            max_query_len=1,  # decode-only
         )
 
     def build(
         self,
-        common_prefix_metadata,
+        common_prefix_len: int,
         common_attn_metadata,
+        fast_build: bool = False,
     ) -> FusenKVMetadata:
         m = common_attn_metadata
 
         return FusenKVMetadata(
             block_table=m.block_table_tensor,
-            seq_lens=m.seq_lens_tensor,
+            seq_lens=m.seq_lens,
             slot_mapping=m.slot_mapping,
-            is_prefill=(m.num_prefill_tokens > 0),
-            num_prefill_tokens=m.num_prefill_tokens,
-            num_decode_tokens=m.num_decode_tokens,
+            query_start_loc=m.query_start_loc,
+            num_actual_tokens=m.num_actual_tokens,
+            num_reqs=m.num_reqs,
+            max_query_len=m.max_query_len,
         )
 
 
@@ -162,7 +188,10 @@ class FusenKVBackend(AttentionBackend):
 
     @staticmethod
     def get_name() -> str:
-        return "FUSEN_KV"
+        # Must match the AttentionBackendEnum member name we register under.
+        # vLLM does: AttentionBackendEnum[backend.get_name()] to look up
+        # the enum member, so this must be "CUSTOM" (our registered slot).
+        return "CUSTOM"
 
     @staticmethod
     def get_impl_cls() -> type["FusenKVImpl"]:
@@ -387,11 +416,19 @@ class FusenKVImpl(AttentionImplBase):
             # Profiling run
             if output is not None:
                 return output.fill_(0)
-            return query.new_zeros(query.shape[0], self.num_heads * self.head_size)
+            return query.new_zeros(query.shape[0], self.num_heads, self.head_size)
 
         self._ensure_scales(layer, kv_cache, query.device)
 
         num_tokens = query.shape[0]
+        B = attn_metadata.num_reqs
+
+        # Output is [num_tokens, num_heads, head_size] (3D) from vLLM
+        if output is None:
+            output = query.new_zeros(num_tokens, self.num_heads, self.head_size)
+
+        # Determine if this is a decode-only batch (all queries are 1 token)
+        is_decode_only = (attn_metadata.max_query_len == 1)
 
         # ---- Store K/V into quantized cache (synchronous for CUDA graph safety) ----
         if attn_metadata.slot_mapping is not None and key is not None:
@@ -400,14 +437,12 @@ class FusenKVImpl(AttentionImplBase):
                 attn_metadata.slot_mapping, layer, self.num_kv_heads,
             )
 
-        # ---- Decode attention ----
-        if attn_metadata.num_decode_tokens > 0:
-            decode_start = attn_metadata.num_prefill_tokens
-            decode_query = query[decode_start:]
-            B = decode_query.shape[0]
-
-            # Reshape for our kernel: [B, Hq, D]
-            q = decode_query.reshape(B, self.num_heads, self.head_size)
+        if is_decode_only:
+            # ---- Pure decode: all requests have 1 query token ----
+            # query is [B, Hq, D], our decode_fn expects [B, Hq, D]
+            q = query[:B]
+            if q.ndim == 2:
+                q = q.reshape(B, self.num_heads, self.head_size)
 
             attn_out = self.decode_fn(
                 q, kv_cache, layer._fusen_scales,
@@ -416,24 +451,48 @@ class FusenKVImpl(AttentionImplBase):
                 self.scale, self.num_kv_heads,
             )
 
-            # Reshape back: [B, Hq*D]
-            if output is not None:
-                output[decode_start:] = attn_out.reshape(B, -1)
-            else:
-                output = query.new_zeros(num_tokens, self.num_heads * self.head_size)
-                output[decode_start:] = attn_out.reshape(B, -1)
+            # attn_out is [B, Hq, D] -- write directly into 3D output
+            output[:B] = attn_out
+        else:
+            # ---- Mixed prefill+decode or pure prefill ----
+            qsl = attn_metadata.query_start_loc
+            decode_indices = []
+            for i in range(B):
+                q_start = qsl[i].item()
+                q_end = qsl[i + 1].item()
+                q_len = q_end - q_start
 
-        # ---- Prefill attention (fall back to torch SDPA) ----
-        if attn_metadata.num_prefill_tokens > 0:
-            n_prefill = attn_metadata.num_prefill_tokens
-            prefill_out = self._prefill_with_sliding_window(
-                query, key, value, n_prefill,
-            )
+                if q_len > 1:
+                    # Prefill: use SDPA for this request
+                    prefill_out = self._prefill_with_sliding_window(
+                        query[q_start:q_end],
+                        key[q_start:q_end],
+                        value[q_start:q_end],
+                        q_len,
+                    )
+                    # prefill_out is [n, Hq*D], reshape to [n, Hq, D]
+                    output[q_start:q_end] = prefill_out.reshape(
+                        q_len, self.num_heads, self.head_size)
+                else:
+                    decode_indices.append(i)
 
-            if output is not None:
-                output[:n_prefill] = prefill_out
-            else:
-                output = query.new_zeros(num_tokens, self.num_heads * self.head_size)
-                output[:n_prefill] = prefill_out
+            if decode_indices:
+                # Batch decode for all 1-token requests
+                n_dec = len(decode_indices)
+                dec_idx = torch.tensor(decode_indices, device=query.device)
+                dec_token_starts = qsl[dec_idx]
+
+                dec_queries = query[dec_token_starts]
+                if dec_queries.ndim == 2:
+                    dec_queries = dec_queries.reshape(n_dec, self.num_heads, self.head_size)
+
+                attn_out = self.decode_fn(
+                    dec_queries, kv_cache, layer._fusen_scales,
+                    attn_metadata.block_table[dec_idx],
+                    attn_metadata.seq_lens[dec_idx],
+                    self.scale, self.num_kv_heads,
+                )
+
+                output[dec_token_starts] = attn_out
 
         return output
