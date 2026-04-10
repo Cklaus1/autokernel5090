@@ -1157,17 +1157,24 @@ class TestRacingSolve:
         """First agent to finish with score >= threshold wins, others are cancelled."""
 
         class SequentialBackend(MockBackend):
-            """Agents finish in order with different delays."""
+            """First agent-level call returns fast, rest sleep.
+
+            Uses ``priority`` to distinguish agent calls (priority != None)
+            from scoring/review calls (priority == None).  Only agent calls
+            with priority > first are slowed down.
+            """
 
             def __init__(self):
                 super().__init__()
-                self._call_count = 0
+                self._agent_call_count = 0
 
             async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None,
                                priority=None, **kwargs):
-                self._call_count += 1
-                idx = self._call_count
-                if idx == 1:
+                # Scoring/review calls have no priority -- return fast
+                if priority is None:
+                    return "Looks good."
+                self._agent_call_count += 1
+                if self._agent_call_count == 1:
                     return "```python\ndef fix(): return 42\n```\n\nFixed immediately."
                 else:
                     await asyncio.sleep(10)

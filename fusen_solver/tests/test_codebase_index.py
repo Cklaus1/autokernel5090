@@ -62,11 +62,17 @@ class TestTokenise:
         assert _tokenise("Fix THE Bug") == _tokenise("fix the bug")
 
     def test_punctuation_stripped(self):
-        tokens = _tokenise("fix-the-bug_in pagination.py!")
+        # Hyphens and dots are split boundaries; underscores are kept (Python identifiers).
+        tokens = _tokenise("fix-the-bug in pagination.py!")
         assert "fix" in tokens
         assert "bug" in tokens
         assert "pagination" in tokens
         assert "py" in tokens
+
+    def test_underscores_kept_in_identifiers(self):
+        # bug_in is treated as a single identifier token.
+        tokens = _tokenise("bug_in_file")
+        assert "bug_in_file" in tokens
 
 
 class TestExtractSymbols:
