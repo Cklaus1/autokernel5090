@@ -1,0 +1,380 @@
+{
+  "model": "/models/gemma-4-26B-pruned-27L-rm2_4_8",
+  "timestamp": "2026-04-10T13:46:59",
+  "total_time_s": 537.6,
+  "overall_score": 0.525,
+  "domains": {
+    "coding": {
+      "score": 0.397,
+      "n_tests": 21,
+      "n_passed": 11,
+      "n_failed": 10,
+      "subdomains": {
+        "algorithms": 0.5,
+        "bash": 0.167,
+        "debugging": 0.0,
+        "javascript": 1.0,
+        "python": 0.667,
+        "rust": 0.25,
+        "sql": 0.375,
+        "typescript": 0.0
+      },
+      "failed_tests": [
+        {
+          "prompt": "Write a Python class implementing a stack with push, pop, and peek methods. Just",
+          "score": 0.3333333333333333,
+          "response": "```thought\n```python\nclass Stack:\n    #\n```python\n```python\nclass Stack:\n```python\n```python\n```python\n```python\n```python\n```python\n```python\n```pyth"
+        },
+        {
+          "prompt": "Write a SQL query using a window function to rank employees by salary within eac",
+          "score": 0.0,
+          "response": "To provide the correct SQL query, I need to make a small assumption about your table structure. I will assume your table is named `employees` and has "
+        },
+        {
+          "prompt": "Write a bash one-liner that counts the number of lines in all .py files in a dir",
+          "score": 0.0,
+          "response": "To provide the most accurate answer, I need to clarify one small detail: *****************************************************************************"
+        },
+        {
+          "prompt": "Write a SQL query to find all pairs of employees who work in the same department",
+          "score": 0.0,
+          "response": "To provide the correct SQL query, I need to make a small assumption: I will assume your table name is `employees` and the column for the department is"
+        },
+        {
+          "prompt": "Write a bash script that monitors a log file and sends an alert when 'ERROR' app",
+          "score": 0.0,
+          "response": "```\n```bash\n#!/bin/bash\n\n##\n```bash\n```bash\n```bash\n```bash\n```bash\n```bash\n```bash\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n``"
+        },
+        {
+          "prompt": "Write a TypeScript function with generics that filters an array based on a predi",
+          "score": 0.0,
+          "response": "To solve this, we will use a generic type `T` to represent the shape of the data, and we will use a generic type `T` to represent the shape of the dat"
+        },
+        {
+          "prompt": "Write a Rust function that implements a thread-safe counter using Arc and Mutex.",
+          "score": 0.0,
+          "response": "```thought\n```\n```thought\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n```\n\n\n\n```\n```\n\n\n\n\n```\n```\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+        },
+        {
+          "prompt": "Debug this Python code and explain the bug:\ndef sort_list(lst):\n    return lst.s",
+          "score": 0.0,
+          "response": "The code you provided contains a **SyntaxError** and a a **SyntaxError**. Specifically, it is a **SyntaxError**.\n\n######****[*************************"
+        },
+        {
+          "prompt": "Debug this code and explain the bug:\ndef add_to_list(item, lst=[]):\n    lst.appe",
+          "score": 0.0,
+          "response": "The code you provided is a snippet of a Python function. It contains several syntax and logical errors.\n\n######***************************************"
+        },
+        {
+          "prompt": "Write a Python function that detects a cycle in a linked list using Floyd's algo",
+          "score": 0.0,
+          "response": "```python\ndef find_cycle(head_node, tail_node):\n    \"\"\"\n    # Floyd's algorithm is used to find the cycle in a linked list.\n    \n    The function take"
+        }
+      ]
+    },
+    "math": {
+      "score": 0.159,
+      "n_tests": 22,
+      "n_passed": 4,
+      "n_failed": 18,
+      "subdomains": {
+        "algebra": 0.1,
+        "arithmetic": 0.0,
+        "calculus": 0.75,
+        "probability": 0.0,
+        "word_problem": 0.0
+      },
+      "failed_tests": [
+        {
+          "prompt": "What is 17 * 23? Answer with just the number.",
+          "score": 0.0,
+          "response": "12"
+        },
+        {
+          "prompt": "What is 144 / 12? Answer with just the number.",
+          "score": 0.0,
+          "response": "11"
+        },
+        {
+          "prompt": "What is 156 + 287? Answer with just the number.",
+          "score": 0.0,
+          "response": "477"
+        },
+        {
+          "prompt": "What is 1000 - 678? Answer with just the number.",
+          "score": 0.0,
+          "response": "321"
+        },
+        {
+          "prompt": "What is 2^10? Answer with just the number.",
+          "score": 0.0,
+          "response": "1"
+        },
+        {
+          "prompt": "Solve: 2x + 5 = 17. What is x? Answer with just the number.",
+          "score": 0.0,
+          "response": "2"
+        },
+        {
+          "prompt": "If y = 2x + 3 and x = 4, what is y? Answer with just the number.",
+          "score": 0.0,
+          "response": "11"
+        },
+        {
+          "prompt": "Solve: 3x - 7 = 14. What is x? Answer with just the number.",
+          "score": 0.0,
+          "response": "11"
+        },
+        {
+          "prompt": "Simplify: (x^2 - 9) / (x - 3). Answer concisely.",
+          "score": 0.0,
+          "response": "To simplify the expression $\\frac{x^2 - 9}{ ( (x - 1) }$ we must first clarify the notation. Assuming the expression is:\n$$\\frac{x^2 - 0}{ ( ( ( x - 1"
+        },
+        {
+          "prompt": "What is the derivative of x^3 + 2x? Answer concisely.",
+          "score": 0.0,
+          "response": "To find the derivative of $x^2 + 2x$, we differentiate each term with respect to $x$.\n\n1  ******  ****  **    **    **    **    **    \n    \n    \n    \n"
+        },
+        {
+          "prompt": "What is the mean of [2, 4, 6, 8, 10]? Answer with just the number.",
+          "score": 0.0,
+          "response": "10"
+        },
+        {
+          "prompt": "If P(A)=0.3 and P(B)=0.5 and A and B are independent, what is P(A and B)? Answer",
+          "score": 0.0,
+          "response": "0.1"
+        },
+        {
+          "prompt": "A train travels 120 km in 2 hours. What is its speed in km/h? Answer with just t",
+          "score": 0.0,
+          "response": "60"
+        },
+        {
+          "prompt": "If 5 workers can build a wall in 10 days, how many days would 10 workers take? A",
+          "score": 0.0,
+          "response": "1"
+        },
+        {
+          "prompt": "A store has a 20% off sale. If an item costs $80, what is the sale price? Answer",
+          "score": 0.0,
+          "response": "64"
+        },
+        {
+          "prompt": "What is 15% of 200? Answer with just the number.",
+          "score": 0.0,
+          "response": "30"
+        },
+        {
+          "prompt": "You flip a fair coin 3 times. What is the probability of getting exactly 2 heads",
+          "score": 0.0,
+          "response": "To find the probability of getting exactly 2 heads when flipping a fair coin 3 times, we can follow these steps:\n\n**1. Identify the total number of po"
+        },
+        {
+          "prompt": "A bag has 3 red and 5 blue balls. What is the probability of drawing a red ball?",
+          "score": 0.0,
+          "response": "To find the probability, we use the formula::\n$$\\text{Probability} = \\frac{\\text{Number of favorable outcomes}}{\\ \\text{(Total number of outcomes}}$$\n"
+        }
+      ]
+    },
+    "reasoning": {
+      "score": 0.35,
+      "n_tests": 20,
+      "n_passed": 7,
+      "n_failed": 13,
+      "subdomains": {
+        "analogy": 0.333,
+        "causal": 0.0,
+        "cognitive": 0.5,
+        "counterfactual": 0.5,
+        "logic": 0.4,
+        "pattern": 0.333
+      },
+      "failed_tests": [
+        {
+          "prompt": "If it rains, the ground is wet. The ground is wet. Can we conclude it rained? An",
+          "score": 0.0,
+          "response": "******\n******\n****\n\n****\n\n**\n**\n**\n**\n**\n**\n**\n\n\n**\n\n**\n\n\n**\n\n\n|\n|\n|\n|\n|\n|\n|\n|\n|\n|\n|\n|\n|\n|\n|\n|\n|\n|\n|\n|\n  |\n  \n\n  \n\n  \n\n  \n\n  \n\n  \n\n  \n\n  \n\n  \n\n  \n\n  \n"
+        },
+        {
+          "prompt": "If all cats are animals, and some animals are pets, can we conclude that all cat",
+          "score": 0.0,
+          "response": "******\n\n****Yes**\n\n******\n\n******\n\n****\n\n****\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+        },
+        {
+          "prompt": "None of the students failed. Is it true that at least one student passed? Answer",
+          "score": 0.0,
+          "response": "******\n****\n\n****\n\n****\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+        },
+        {
+          "prompt": "A bat and ball cost $1.10 together. The bat costs $1 more than the ball. How muc",
+          "score": 0.0,
+          "response": "To solve this riddle, we must first translate the wordplay into mathematical expressions.\n\n###******\n******\n****\n**\n**\n**\n\n**\n\n**\n**\n**\n**\n**\n\n\n\n\n\n\n**"
+        },
+        {
+          "prompt": "A farmer has 17 sheep. All but 9 die. How many sheep are left?",
+          "score": 0.0,
+          "response": "The answer is **1**.\n\n****Explanation:**\n\n1.  **\"**\n****\n****\n**\n**\n**\n**\n\n\n**\n**\n\n\n**\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+        },
+        {
+          "prompt": "John is taller than Mary. Mary is taller than Sue. Who is the shortest?",
+          "score": 0.0,
+          "response": "Based on the logic of the sentences provided, ****** **** **** **** **** **** **** **** **** **** **** **** ****  **  **  **  **  **  \n**  \n  \n  \n  \n "
+        },
+        {
+          "prompt": "A is to the left of B. B is to the left of C. What is to the right of A?",
+          "score": 0.0,
+          "response": "To solve this, we need to translate the \"is to\" relationship into a mathematical equation.\n\n**1. Translate the \"to\" into a \"to:**\n**1. Translate the \""
+        },
+        {
+          "prompt": "If I push a glass off a table, what happens and why?",
+          "score": 0.0,
+          "response": "It is a classic word puzzle! Let\u2019s solve it:\n\n********************************************************************************************************"
+        },
+        {
+          "prompt": "What comes next: 1, 1, 2, 3, 5, 8, ___? Answer with just the number.",
+          "score": 0.0,
+          "response": "1"
+        },
+        {
+          "prompt": "What comes next in the sequence: 2, 6, 12, 20, 30, ___? Answer with just the num",
+          "score": 0.0,
+          "response": "41"
+        },
+        {
+          "prompt": "Complete the analogy: Book is to reading as fork is to ___",
+          "score": 0.0,
+          "response": "The complete analogy is: ****** ******** *************************************************************************************************************"
+        },
+        {
+          "prompt": "Complete the analogy: Bird is to nest as human is to ___",
+          "score": 0.0,
+          "response": "To complete the analogy: ****\n\n******\n\n****\n\n****\n\n****\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n**\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"
+        },
+        {
+          "prompt": "If the Earth had no moon, name two things that would be different.",
+          "score": 0.0,
+          "response": "The phrase you are referencing is from the song **\"Bohemian Song** by **Bohemian Song** by **Bohemian Rhapsody** by **Bohemian Rhapsody** by **Bohemia"
+        }
+      ]
+    },
+    "knowledge": {
+      "score": 0.524,
+      "n_tests": 21,
+      "n_passed": 11,
+      "n_failed": 10,
+      "subdomains": {
+        "biology": 0.0,
+        "chemistry": 0.667,
+        "geography": 0.6,
+        "history": 0.5,
+        "literature": 0.5,
+        "physics": 0.0,
+        "technology": 0.667
+      },
+      "failed_tests": [
+        {
+          "prompt": "What is the capital of Mongolia? Answer with just the city name.",
+          "score": 0.0,
+          "response": "Ulaan"
+        },
+        {
+          "prompt": "What is the smallest country in the world by area? Answer with just the name.",
+          "score": 0.0,
+          "response": "Monaco"
+        },
+        {
+          "prompt": "Who wrote 'One Hundred Years of Solitude'? Answer with just the author name.",
+          "score": 0.0,
+          "response": "Edward Bikel"
+        },
+        {
+          "prompt": "Who wrote 'Pride and Prejudice'? Answer with just the author name.",
+          "score": 0.0,
+          "response": "Jodi Pillen"
+        },
+        {
+          "prompt": "What is the chemical symbol for gold? Answer with just the symbol.",
+          "score": 0.0,
+          "response": "Au"
+        },
+        {
+          "prompt": "What is the speed of light in vacuum approximately in km/s? Answer with just the",
+          "score": 0.0,
+          "response": "397700"
+        },
+        {
+          "prompt": "In what year did the Berlin Wall fall? Answer with just the year.",
+          "score": 0.0,
+          "response": "11"
+        },
+        {
+          "prompt": "In what year did World War II end? Answer with just the year.",
+          "score": 0.0,
+          "response": "1"
+        },
+        {
+          "prompt": "What programming language was created by Guido van Rossum? Answer with just the ",
+          "score": 0.0,
+          "response": "ALGOLON"
+        },
+        {
+          "prompt": "What is the powerhouse of the cell? Answer concisely.",
+          "score": 0.0,
+          "response": "The phrase **\"the powerhouse of the cell\"** is a pun on the phrase **\"the powerhouse of the cell.\"**\n\nThe answer is: **\"the powerhouse of the cell.\"**"
+        }
+      ]
+    },
+    "language": {
+      "score": 0.853,
+      "n_tests": 17,
+      "n_passed": 15,
+      "n_failed": 2,
+      "subdomains": {
+        "creative": 1.0,
+        "formal": 1.0,
+        "simplification": 1.0,
+        "summarization": 1.0,
+        "tone": 0.75,
+        "translation": 0.6
+      },
+      "failed_tests": [
+        {
+          "prompt": "Translate to Japanese: 'Thank you very much.'",
+          "score": 0.0,
+          "response": "Depending on the context (whether it is a formal letter or a casual expression), here are the most common ways to translate **\" \"Thank you very much. "
+        },
+        {
+          "prompt": "Translate to Italian: 'Good morning, how are you?'",
+          "score": 0.0,
+          "response": "The translation for \" \" \" \" \" ` \" ` \" \" \" ` \" ` ` ` \" ` ` \" , \" , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , , "
+        }
+      ]
+    },
+    "instruction": {
+      "score": 0.867,
+      "n_tests": 12,
+      "n_passed": 10,
+      "n_failed": 2,
+      "subdomains": {
+        "constraint": 1.0,
+        "list": 0.2,
+        "multistep": 1.0,
+        "refusal": 1.0,
+        "structured": 1.0
+      },
+      "failed_tests": [
+        {
+          "prompt": "Name 3 programming languages. Only 3, no more, no less.",
+          "score": 0.0,
+          "response": "1\n"
+        },
+        {
+          "prompt": "List exactly 5 planets in our solar system, numbered 1-5.",
+          "score": 0.4,
+          "response": "1\n1\n2\n3\n4\n4\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n1\n \n \n \n \n \n\n \n\n \n\n \n\n \n\n \n\n \n\n \n\n \n\n \n\n \n\n "
+        }
+      ]
+    }
+  }
+}
