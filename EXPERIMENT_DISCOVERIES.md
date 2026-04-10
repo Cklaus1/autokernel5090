@@ -375,3 +375,11 @@ RIGHT approach (what we learned):
 **Implication:** FusenCache + CUDA graphs is best for single-user/small-batch (≤16 concurrent).
 For high batch (C=128+): FusenCache eager (6,685 tok/s) is still the best config.
 For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
+
+## Discovery #45: Shared buffers fix memory (0.42 GiB constant) but C≥16 still crashes
+**Fix #2 result:** Graph memory now CONSTANT at 0.42 GiB for 13 sizes (was 10.74 GiB → exploded).
+**C=1: 127.8 tok/s** (matches best BF16 config + 4x KV compression!)
+**C=4: 392 tok/s** (excellent)
+**C=16+: errors** (shape mismatches in mixed prefill+decode path when batch > graph capture size)
+**Two shape fixes applied** but more edge cases remain at larger batch sizes.
+**Status:** Single-user FusenCache + CUDA graphs is SOLVED. Batch path needs more debugging.

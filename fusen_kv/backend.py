@@ -329,12 +329,70 @@ class FusenKVImpl(AttentionImplBase):
 
         max_seq = sliding_window if sliding_window else 131072
 
+        # ---- Shared decode buffers (CUDA graph memory fix) ----
+        # Pre-allocate ONE set of mid_out/output buffers at max_batch_size.
+        # All CUDA graph captures use the SAME tensor addresses (just
+        # different seq_lens padding), eliminating per-graph-size allocation
+        # that caused 10-120 GiB memory explosion with many capture sizes.
+        #
+        # Detect max batch size from vllm config, fall back to 512.
+        _max_B = 512
+        try:
+            from vllm.config import get_current_vllm_config
+            vllm_cfg = get_current_vllm_config()
+            if vllm_cfg and vllm_cfg.scheduler_config:
+                _max_B = vllm_cfg.scheduler_config.max_num_seqs
+            if vllm_cfg and vllm_cfg.compilation_config:
+                # Use max CUDA graph capture size if available (tighter bound)
+                cg_max = vllm_cfg.compilation_config.max_cudagraph_capture_size
+                if cg_max and cg_max > 0:
+                    _max_B = cg_max
+        except Exception:
+            pass
+
+        # Determine num_kv_splits (must match what make_decode_fn will use)
+        from kv_cache_gen.generate import _optimal_splits
+        _num_kv_splits = _optimal_splits(max_seq, _max_B)
+
+        # Determine output dtype: match the model's compute dtype
+        _out_dtype = torch.float16
+        try:
+            vllm_cfg  # may not exist if the try block above failed
+            if vllm_cfg and vllm_cfg.model_config:
+                _out_dtype = vllm_cfg.model_config.dtype
+        except (NameError, Exception):
+            pass
+
+        self._shared_mid_out = torch.empty(
+            _max_B, num_heads, _num_kv_splits, head_size + 1,
+            dtype=torch.float32, device='cuda',
+        )
+        self._shared_output = torch.empty(
+            _max_B, num_heads, head_size,
+            dtype=_out_dtype, device='cuda',
+        )
+        logger.info(
+            "FusenKV: shared decode buffers allocated at max_B=%d "
+            "(mid_out=%.1f MiB, output=%.1f MiB)",
+            _max_B,
+            self._shared_mid_out.nbytes / (1024 * 1024),
+            self._shared_output.nbytes / (1024 * 1024),
+        )
+
         # Try C++ decode kernel first (CUDA graph compatible, no Triton JIT)
         self._use_cpp_decode = False
         if _HAS_CPP_DECODE and self.spec.k_bits == 4 and self.spec.v_bits == 4:
             self._use_cpp_decode = True
-            self._cpp_num_kv_splits = _auto_num_kv_splits(max_seq, 256)
-            self._cpp_buffers = {}  # persistent buffers keyed by (B, Hq, D, device)
+            self._cpp_num_kv_splits = _auto_num_kv_splits(max_seq, _max_B)
+            # Shared buffers for C++ path too
+            self._cpp_shared_mid_out = torch.empty(
+                _max_B, num_heads, self._cpp_num_kv_splits, head_size + 1,
+                dtype=torch.float32, device='cuda',
+            )
+            self._cpp_shared_output = torch.empty(
+                _max_B, num_heads, head_size,
+                dtype=_out_dtype, device='cuda',
+            )
             logger.info(
                 "FusenKV: using C++ decode kernel (num_kv_splits=%d)",
                 self._cpp_num_kv_splits,
@@ -344,18 +402,22 @@ class FusenKVImpl(AttentionImplBase):
                 self.spec,
                 block_kv=16, block_h=8, num_warps=2,
                 max_seq_len=max_seq,
-                max_batch_size=256,
+                max_batch_size=_max_B,
                 cuda_graph_safe=True,
                 logits_soft_cap=self.logits_soft_cap,
+                shared_mid_out=self._shared_mid_out,
+                shared_output=self._shared_output,
             )
         else:
             self.decode_fn = make_decode_fn(
                 self.spec,
                 block_kv=16, block_h=8, num_warps=2,
                 max_seq_len=max_seq,
-                max_batch_size=256,
+                max_batch_size=_max_B,
                 cuda_graph_safe=True,
                 logits_soft_cap=self.logits_soft_cap,
+                shared_mid_out=self._shared_mid_out,
+                shared_output=self._shared_output,
             )
 
         self.store_fn = make_store_fn(self.spec)
@@ -396,26 +458,17 @@ class FusenKVImpl(AttentionImplBase):
         """Decode using the C++ CUDA kernel (CUDA graph compatible).
 
         Same signature as Triton decode_fn for drop-in replacement.
-        Manages persistent output/mid_out buffers for CUDA graph safety.
+        Uses shared pre-allocated buffers so all CUDA graph capture sizes
+        share the same tensor addresses (no per-graph memory explosion).
         """
         B, Hq, D = query.shape
         Hk = num_kv_heads
         kv_group_size = Hq // Hk
         page_size = kv_cache.shape[1]
 
-        # Persistent buffers (same pattern as Triton's cuda_graph_safe mode)
-        key = (B, Hq, D, query.device, query.dtype)
-        if key not in self._cpp_buffers:
-            self._cpp_buffers[key] = {
-                'mid_out': torch.empty(
-                    B, Hq, self._cpp_num_kv_splits, D + 1,
-                    dtype=torch.float32, device=query.device),
-                'output': torch.empty(
-                    B, Hq, D, dtype=query.dtype, device=query.device),
-            }
-        bufs = self._cpp_buffers[key]
-        mid_out = bufs['mid_out']
-        output = bufs['output']
+        # Shared buffers: same addresses for all graph capture sizes
+        mid_out = self._cpp_shared_mid_out
+        output = self._cpp_shared_output
 
         torch.ops.fusencache.decode_attention(
             output,
@@ -713,7 +766,7 @@ class FusenKVImpl(AttentionImplBase):
                 self.scale, self.num_kv_heads,
             )
 
-            output[:padded_B] = attn_out.to(output.dtype)
+            output[:padded_B] = attn_out[:padded_B].to(output.dtype)
         else:
             # ---- Mixed prefill+decode or pure prefill ----
             qsl = attn_metadata.query_start_loc
@@ -755,6 +808,6 @@ class FusenKVImpl(AttentionImplBase):
                     self.scale, self.num_kv_heads,
                 )
 
-                output[dec_token_starts] = attn_out.to(output.dtype)
+                output[dec_token_starts] = attn_out[:n_dec].to(output.dtype)
 
         return output

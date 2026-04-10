@@ -1,5 +1,7 @@
 """Generate decode and store functions from a KVCacheSpec."""
 
+import math
+
 import torch
 import triton
 
@@ -9,7 +11,7 @@ from kv_cache_gen.kernel import (
 )
 
 
-# Split-K lookup table: seq_len → optimal num_kv_splits
+# Split-K lookup table: seq_len → optimal num_kv_splits (for low-batch cases)
 # Derived from bench_seqlen_scaling.py results on RTX 5090.
 # At short sequences, fewer splits avoids underutilization.
 # At long sequences, more splits improves bandwidth saturation.
@@ -23,31 +25,54 @@ _SPLITS_LOOKUP = [
 ]
 
 
-def _optimal_splits(max_seq_len: int, batch_size: int) -> int:
-    """Select optimal num_kv_splits based on sequence length and batch size.
-
-    At high batch, fewer splits are needed because batch parallelism
-    already saturates the GPU. At low batch + long seq, more splits
-    are needed to keep all SMs busy.
-    """
-    # High batch already saturates — use fewer splits
-    if batch_size >= 64:
-        if max_seq_len <= 4096:
-            return 16
-        return 32
-
-    # Low batch — follow the lookup table
+def _optimal_splits_seqlen(max_seq_len: int) -> int:
+    """Select base num_kv_splits from sequence length (low-batch path)."""
     for threshold, splits in _SPLITS_LOOKUP:
         if max_seq_len <= threshold:
             return splits
     return 128
 
 
+def _optimal_splits(max_seq_len: int, batch_size: int, num_sms: int = 170) -> int:
+    """Adaptive split-K: fewer splits when batch is large.
+
+    Goal: enough total blocks (B x splits) to keep all SMs busy,
+    but not so many that mid_out memory explodes.
+
+    At B=1:   32 splits  (32 blocks per head group)
+    At B=4:   32 splits  (seq_len lookup dominates at low batch)
+    At B=16:  16 splits  (256 blocks -- good SM utilization)
+    At B=32:   8 splits  (256 blocks)
+    At B=128:  2 splits  (256 blocks -- batch nearly saturates)
+    At B=256:  1 split   (256 blocks -- batch alone saturates)
+
+    The max is capped at 32 to bound mid_out memory. At very long
+    sequences with low batch, the seq_len lookup may suggest more,
+    but we clamp to 32.
+    """
+    # Batch-adaptive: target ~2 blocks per SM for good occupancy
+    # (with Hq=16 head groups, each batch element launches multiple blocks,
+    #  so 2x multiplier keeps SMs busy without exploding mid_out)
+    target_blocks = num_sms * 2  # 340 on RTX 5090
+    batch_splits = max(1, target_blocks // max(batch_size, 1))
+    # Clamp to power of 2, max 32 to bound memory
+    batch_splits = min(32, max(1, 2 ** int(math.log2(max(batch_splits, 1)))))
+
+    # For low-batch + long seq, seq_len lookup may push splits higher
+    # (but still capped at 32)
+    if batch_size <= 4:
+        seqlen_splits = _optimal_splits_seqlen(max_seq_len)
+        return min(32, max(batch_splits, seqlen_splits))
+
+    return batch_splits
+
+
 def make_decode_fn(spec: KVCacheSpec, block_kv=16, block_h=None,
                     num_warps=4, num_stages=1, num_kv_splits=None,
                     max_seq_len=None, max_batch_size=None,
                     persistent_buffers=False, cuda_graph_safe=False,
-                    logits_soft_cap=0.0):
+                    logits_soft_cap=0.0,
+                    shared_mid_out=None, shared_output=None):
     """Generate a Triton decode function from a KVCacheSpec.
 
     Args:
@@ -69,6 +94,11 @@ def make_decode_fn(spec: KVCacheSpec, block_kv=16, block_h=None,
             function is safe for torch.cuda.CUDAGraph capture.
         logits_soft_cap: if > 0, applies tanh soft capping to attention logits
             before softmax: score = cap * tanh(score / cap). Used by Gemma models.
+        shared_mid_out: if provided, a pre-allocated [max_B, Hq, NUM_KV_SPLITS, D+1]
+            float32 tensor shared across all CUDA graph capture sizes. Eliminates
+            per-graph buffer allocation (saves 10+ GiB with many graph sizes).
+        shared_output: if provided, a pre-allocated [max_B, Hq, D] tensor shared
+            across all CUDA graph capture sizes. Must be same dtype as query.
 
     Returns a callable: (query, kv_cache, scales, block_table, seq_lens,
                           scale, num_kv_heads) → output
@@ -81,23 +111,40 @@ def make_decode_fn(spec: KVCacheSpec, block_kv=16, block_h=None,
     _cuda_graph_safe = cuda_graph_safe
     _logits_soft_cap = float(logits_soft_cap) if logits_soft_cap else 0.0
 
-    # Auto-select splits at construction time (zero runtime overhead)
+    # Split-K configuration:
+    # - If explicit num_kv_splits given, use it as a fixed value (no adaptation).
+    # - Otherwise, adapt per-call based on actual batch size B.
+    # _max_kv_splits is always the upper bound (for buffer pre-allocation).
+    _adaptive = (num_kv_splits is None)
+    _seq_hint = max_seq_len if max_seq_len is not None else 8192
     if num_kv_splits is not None:
-        _num_kv_splits = num_kv_splits
+        _fixed_splits = num_kv_splits
+        _max_kv_splits = num_kv_splits
     else:
-        _seq = max_seq_len if max_seq_len is not None else 8192
-        _batch = max_batch_size if max_batch_size is not None else 32
-        _num_kv_splits = _optimal_splits(_seq, _batch)
+        _fixed_splits = None
+        # Max splits = what we'd use at B=1 (highest split count)
+        _max_kv_splits = _optimal_splits(_seq_hint, 1)
 
-    # Persistent buffer state (allocated on first call)
+    # Shared buffers mode: all CUDA graph captures use the same pre-allocated
+    # tensors at max_batch_size. The kernel handles padding via seq_lens=0.
+    _shared_mid = shared_mid_out
+    _shared_out = shared_output
+    _use_shared = (_shared_mid is not None and _shared_out is not None)
+
+    # Persistent buffer state (allocated on first call) — only used when
+    # shared buffers are NOT provided (legacy per-graph-size allocation).
     _buffers = {}
 
     def _get_buffers(B, Hq, D, device, out_dtype=torch.float16):
-        """Get or allocate persistent mid_out and output buffers."""
+        """Get or allocate persistent mid_out and output buffers.
+
+        Always allocates at _max_kv_splits so the buffer can be reused
+        even when adaptive splits chooses a smaller split count.
+        """
         key = (B, Hq, D, device, out_dtype)
         if key not in _buffers:
             _buffers[key] = {
-                'mid_out': torch.empty(B, Hq, _num_kv_splits, D + 1,
+                'mid_out': torch.empty(B, Hq, _max_kv_splits, D + 1,
                                        dtype=torch.float32, device=device),
                 'output': torch.empty(B, Hq, D, dtype=out_dtype, device=device),
             }
@@ -123,9 +170,20 @@ def make_decode_fn(spec: KVCacheSpec, block_kv=16, block_h=None,
         BLOCK_H = max(1, BLOCK_H)
         # The grid parallelizes over head groups using VALID_BLOCK_H
         VALID_BLOCK_H = BLOCK_H if kv_group_size > BLOCK_H else kv_group_size
-        NUM_KV_SPLITS = _num_kv_splits
 
-        if _persistent:
+        # Adaptive split-K: fewer splits at large batch to save memory
+        if _adaptive:
+            NUM_KV_SPLITS = _optimal_splits(_seq_hint, B)
+        else:
+            NUM_KV_SPLITS = _fixed_splits
+
+        if _use_shared:
+            # Shared buffers: all CUDA graph captures use the SAME tensor
+            # addresses. Pass full max-sized buffers — the kernel skips
+            # padded entries where seq_lens=0 (zero output, no OOB).
+            mid_out = _shared_mid
+            output = _shared_out
+        elif _persistent:
             bufs = _get_buffers(B, Hq, D, query.device, query.dtype)
             mid_out = bufs['mid_out']
             output = bufs['output']
