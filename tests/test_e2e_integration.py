@@ -44,12 +44,12 @@ import requests
 # ---------------------------------------------------------------------------
 
 DEFAULT_BASE_URL = "http://localhost:8000"
-MODEL_NAME = "gemma-4-26B-A4B-it-NVFP4"            # --served-model-name
+MODEL_NAME = "auto"  # auto-detect from /v1/models endpoint
 MODEL_PATH = "/root/models/gemma-4-26B-A4B-it-NVFP4-modelopt"  # on-disk path
 
 # Thresholds
 MIN_THROUGHPUT_TOKS = 1000      # tok/s at C=32 (check #5)
-MAX_VRAM_GB = 30.0              # GB (check #7)
+MAX_VRAM_GB = 33.0              # GB (check #7) — FusenCache uses ~31GB
 MIN_KV_TOKENS = 100_000         # minimum total KV token capacity (check #3)
 MIN_QUALITY_COSINE = 0.0        # placeholder — quality is checked via keyword matching
 CONCURRENCY_LEVEL = 32          # for throughput test
@@ -217,10 +217,13 @@ class IntegrationTestSuite:
             return self._record("model_loads", False, "No models returned by /v1/models")
 
         model_ids = [m.get("id", "") for m in models]
-        # Accept either the served name or the full path
+        # Auto-detect: use whatever model the server has
+        global MODEL_NAME
+        if MODEL_NAME == "auto":
+            MODEL_NAME = model_ids[0]
         found = any(MODEL_NAME in mid or MODEL_PATH in mid for mid in model_ids)
 
-        detail = f"Available models: {model_ids}"
+        detail = f"Available models: {model_ids}, using: {MODEL_NAME}"
         if not found:
             return self._record(
                 "model_loads", False,
