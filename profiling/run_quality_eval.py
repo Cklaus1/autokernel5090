@@ -18,7 +18,7 @@ import requests
 
 # ── Config ──────────────────────────────────────────────────────────────────
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000/v1")
-MODEL = os.environ.get("MODEL", "/models/gemma-4-26B-A4B-it-NVFP4-modelopt")
+MODEL = os.environ.get("MODEL", "gemma-4-26B-A4B-it-NVFP4")
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "8"))
 OUTPUT_DIR = Path(__file__).parent
 
@@ -197,7 +197,7 @@ def load_mmlu(n: int) -> list[dict]:
         per_subject = max(1, n // len(MMLU_SUBJECTS) + 1)
         for subject in MMLU_SUBJECTS:
             try:
-                ds = load_dataset("cais/mmlu", subject, split="test", trust_remote_code=True)
+                ds = load_dataset("cais/mmlu", subject, split="test")
                 for item in list(ds)[:per_subject]:
                     item["subject"] = subject
                     all_samples.append(item)

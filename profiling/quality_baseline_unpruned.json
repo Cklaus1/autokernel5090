@@ -1,0 +1,167 @@
+{
+  "model": "gemma-4-26B-A4B-it-NVFP4",
+  "timestamp": "2026-04-10T11:21:25",
+  "total_time_s": 164.1,
+  "overall_score": 0.895,
+  "domains": {
+    "coding": {
+      "score": 0.976,
+      "n_tests": 21,
+      "n_passed": 21,
+      "n_failed": 0,
+      "subdomains": {
+        "algorithms": 1.0,
+        "bash": 1.0,
+        "debugging": 1.0,
+        "javascript": 1.0,
+        "python": 1.0,
+        "rust": 1.0,
+        "sql": 0.875,
+        "typescript": 1.0
+      },
+      "failed_tests": []
+    },
+    "math": {
+      "score": 0.545,
+      "n_tests": 22,
+      "n_passed": 12,
+      "n_failed": 10,
+      "subdomains": {
+        "algebra": 0.4,
+        "arithmetic": 0.8,
+        "calculus": 1.0,
+        "probability": 0.5,
+        "word_problem": 0.0
+      },
+      "failed_tests": [
+        {
+          "prompt": "Solve: 3x - 7 = 14. What is x? Answer with just the number.",
+          "score": 0.0,
+          "response": "7"
+        },
+        {
+          "prompt": "Solve: 2x + 5 = 17. What is x? Answer with just the number.",
+          "score": 0.0,
+          "response": "6"
+        },
+        {
+          "prompt": "If y = 2x + 3 and x = 4, what is y? Answer with just the number.",
+          "score": 0.0,
+          "response": "11"
+        },
+        {
+          "prompt": "What is 144 / 12? Answer with just the number.",
+          "score": 0.0,
+          "response": "12"
+        },
+        {
+          "prompt": "What is the mean of [2, 4, 6, 8, 10]? Answer with just the number.",
+          "score": 0.0,
+          "response": "6"
+        },
+        {
+          "prompt": "If 5 workers can build a wall in 10 days, how many days would 10 workers take? A",
+          "score": 0.0,
+          "response": "5"
+        },
+        {
+          "prompt": "A train travels 120 km in 2 hours. What is its speed in km/h? Answer with just t",
+          "score": 0.0,
+          "response": "60"
+        },
+        {
+          "prompt": "A store has a 20% off sale. If an item costs $80, what is the sale price? Answer",
+          "score": 0.0,
+          "response": "64"
+        },
+        {
+          "prompt": "What is 15% of 200? Answer with just the number.",
+          "score": 0.0,
+          "response": "30"
+        },
+        {
+          "prompt": "A bag has 3 red and 5 blue balls. What is the probability of drawing a red ball?",
+          "score": 0.0,
+          "response": "To find the probability of drawing a red ball, follow these steps:\n\n1.  **Determine the number of favorable outcomes:** There are **3** red balls.\n2. "
+        }
+      ]
+    },
+    "reasoning": {
+      "score": 0.9,
+      "n_tests": 20,
+      "n_passed": 18,
+      "n_failed": 2,
+      "subdomains": {
+        "analogy": 1.0,
+        "causal": 1.0,
+        "cognitive": 1.0,
+        "counterfactual": 1.0,
+        "logic": 1.0,
+        "pattern": 0.333
+      },
+      "failed_tests": [
+        {
+          "prompt": "What comes next in the sequence: 2, 6, 12, 20, 30, ___? Answer with just the num",
+          "score": 0.0,
+          "response": "42"
+        },
+        {
+          "prompt": "What comes next: 1, 1, 2, 3, 5, 8, ___? Answer with just the number.",
+          "score": 0.0,
+          "response": "13"
+        }
+      ]
+    },
+    "knowledge": {
+      "score": 0.952,
+      "n_tests": 21,
+      "n_passed": 20,
+      "n_failed": 1,
+      "subdomains": {
+        "biology": 1.0,
+        "chemistry": 0.667,
+        "geography": 1.0,
+        "history": 1.0,
+        "literature": 1.0,
+        "physics": 1.0,
+        "technology": 1.0
+      },
+      "failed_tests": [
+        {
+          "prompt": "What is the chemical symbol for gold? Answer with just the symbol.",
+          "score": 0.0,
+          "response": "Au"
+        }
+      ]
+    },
+    "language": {
+      "score": 1.0,
+      "n_tests": 17,
+      "n_passed": 17,
+      "n_failed": 0,
+      "subdomains": {
+        "creative": 1.0,
+        "formal": 1.0,
+        "simplification": 1.0,
+        "summarization": 1.0,
+        "tone": 1.0,
+        "translation": 1.0
+      },
+      "failed_tests": []
+    },
+    "instruction": {
+      "score": 1.0,
+      "n_tests": 12,
+      "n_passed": 12,
+      "n_failed": 0,
+      "subdomains": {
+        "constraint": 1.0,
+        "list": 1.0,
+        "multistep": 1.0,
+        "refusal": 1.0,
+        "structured": 1.0
+      },
+      "failed_tests": []
+    }
+  }
+}
