@@ -1,0 +1,246 @@
+{
+  "model": "30L-original",
+  "total_time_s": 204.60805201530457,
+  "results": [
+    {
+      "id": 0,
+      "category": "math",
+      "prompt": "What is 17 * 23? Answer with just the number.",
+      "response": "391",
+      "tokens": 4,
+      "latency_s": 1.684669017791748
+    },
+    {
+      "id": 1,
+      "category": "math",
+      "prompt": "Solve: If x + 5 = 12, what is x? Answer with just the number.",
+      "response": "7",
+      "tokens": 2,
+      "latency_s": 1.000563383102417
+    },
+    {
+      "id": 2,
+      "category": "math",
+      "prompt": "What is the square root of 144? Answer with just the number.",
+      "response": "12",
+      "tokens": 3,
+      "latency_s": 1.3568005561828613
+    },
+    {
+      "id": 3,
+      "category": "math",
+      "prompt": "If a triangle has sides 3, 4, and 5, what is its area? Answer with just the number.",
+      "response": "6",
+      "tokens": 2,
+      "latency_s": 1.1456170082092285
+    },
+    {
+      "id": 4,
+      "category": "math",
+      "prompt": "What is 15% of 200? Answer with just the number.",
+      "response": "30",
+      "tokens": 3,
+      "latency_s": 1.8665134906768799
+    },
+    {
+      "id": 5,
+      "category": "code",
+      "prompt": "Write a Python one-liner to reverse a string.",
+      "response": "The most efficient and common way to reverse a string in Python is using **slicing**:\n\n```python\nreversed_string = original_string[::-1]\n```\n\n### Explanation:\nThe syntax `[start:stop:step]` is used for slicing. By leaving `start` and `stop` empty and setting the `step` to `-1`, Python traverses the string backward from the end to the beginning.",
+      "tokens": 88,
+      "latency_s": 22.94455313682556
+    },
+    {
+      "id": 6,
+      "category": "code",
+      "prompt": "What does the Python expression [x**2 for x in range(5)] evaluate to?",
+      "response": "The expression `[x**2 for x in range(5)]` evaluates to:\n\n**`[0, 1, 4, 9, 16]`**\n\n### Breakdown of the evaluation:\nThis is a **list comprehension** that performs the following steps:\n\n1.  **`range(5)`**: Generates a sequence of integers starting from 0 up to (but not including) 5: `[0, 1, 2,",
+      "tokens": 100,
+      "latency_s": 14.852794408798218
+    },
+    {
+      "id": 7,
+      "category": "code",
+      "prompt": "Write a bash command to count lines in a file.",
+      "response": "The standard command to count lines in a file is **`wc -l`**.\n\n### 1. The Basic Command\nTo count the lines in a file named `filename.txt`:\n\n```bash\nwc -l filename.txt\n```\n**Output format:** `[number] [filename]` (e.g., `42 filename.txt`)\n\n---\n\n### 2. Common Variations\n\n**To get only the number (without the filename):**\nIf you",
+      "tokens": 100,
+      "latency_s": 21.81193232536316
+    },
+    {
+      "id": 8,
+      "category": "code",
+      "prompt": "What is the time complexity of binary search?",
+      "response": "The time complexity of binary search is:\n\n### **1. Best Case: $O(1)$**\nThe best case occurs when the target element is located exactly at the **middle index** of the array on the very first comparison.\n\n### **2. Worst Case and Average Case: $O(\\log n)$**\nIn both the worst-case and average-case scenarios, the time complexity is **logarithmic**, expressed as **$O(\\log n)$**.\n\n---",
+      "tokens": 100,
+      "latency_s": 16.20420551300049
+    },
+    {
+      "id": 9,
+      "category": "code",
+      "prompt": "Write a Python function to check if a number is prime.",
+      "response": "Here is a highly efficient way to write this function in Python.\n\n### The Optimized Implementation\n\nTo check if a number is prime, you don't need to check every number up to $n$. You only need to check up to the **square root** of $n$, and you can skip all even numbers after checking for 2.\n\n```python\nimport math\n\ndef is_prime(n):\n    \"\"\"Returns True if n is a prime number, False otherwise.\"\"\"",
+      "tokens": 100,
+      "latency_s": 16.756715536117554
+    },
+    {
+      "id": 10,
+      "category": "knowledge",
+      "prompt": "What is the capital of France?",
+      "response": "The capital of France is **Paris**.",
+      "tokens": 9,
+      "latency_s": 0.4617621898651123
+    },
+    {
+      "id": 11,
+      "category": "knowledge",
+      "prompt": "Who wrote Romeo and Juliet?",
+      "response": "**William Shakespeare** wrote *Romeo and Juliet*.",
+      "tokens": 11,
+      "latency_s": 4.528098821640015
+    },
+    {
+      "id": 12,
+      "category": "knowledge",
+      "prompt": "What is the chemical formula for water?",
+      "response": "The chemical formula for water is **$\\text{H}_2\\text{O}$**.\n\nThis means that each molecule of water is made up of two hydrogen atoms bonded to one oxygen atom.",
+      "tokens": 41,
+      "latency_s": 9.707816123962402
+    },
+    {
+      "id": 13,
+      "category": "knowledge",
+      "prompt": "What year did World War II end?",
+      "response": "World War II ended in **1945**.",
+      "tokens": 12,
+      "latency_s": 0.5827934741973877
+    },
+    {
+      "id": 14,
+      "category": "knowledge",
+      "prompt": "What is the speed of light in meters per second?",
+      "response": "The speed of light in a vacuum is exactly **299,792,458 meters per second**.",
+      "tokens": 26,
+      "latency_s": 5.570637941360474
+    },
+    {
+      "id": 15,
+      "category": "creative",
+      "prompt": "Complete this sentence: The cat sat on the...",
+      "response": "mat.",
+      "tokens": 3,
+      "latency_s": 4.173323631286621
+    },
+    {
+      "id": 16,
+      "category": "creative",
+      "prompt": "Give me a one-word synonym for \"happy\".",
+      "response": "**Joyful**",
+      "tokens": 5,
+      "latency_s": 0.2873694896697998
+    },
+    {
+      "id": 17,
+      "category": "creative",
+      "prompt": "What color do you get when you mix red and blue?",
+      "response": "When you mix red and blue, you get **purple**.\n\nDepending on the specific shades and the amount of each color used, you can achieve different variations:\n*   **Violet:** If there is more blue.\n*   **Magenta or Plum:** If there is more red.",
+      "tokens": 59,
+      "latency_s": 11.174715518951416
+    },
+    {
+      "id": 18,
+      "category": "creative",
+      "prompt": "Name a fruit that starts with the letter A.",
+      "response": "An **Apple**.",
+      "tokens": 5,
+      "latency_s": 0.4515960216522217
+    },
+    {
+      "id": 19,
+      "category": "creative",
+      "prompt": "What is the opposite of \"hot\"?",
+      "response": "The opposite of \"hot\" is **cold**.",
+      "tokens": 11,
+      "latency_s": 0.9146370887756348
+    },
+    {
+      "id": 20,
+      "category": "reasoning",
+      "prompt": "If all roses are flowers and some flowers fade quickly, can we conclude all roses fade quickly?",
+      "response": "No, we cannot conclude that all roses fade quickly.\n\nHere is the logical breakdown of why that conclusion is invalid:\n\n**1. The Premises:**\n*   **Premise A:** All roses are flowers. (Roses $\\subset$ Flowers)\n*   **Premise B:** Some flowers fade quickly. (Some Flowers $\\cap$ Quick-faders $\\neq \\emptyset$)\n\n**2. The Logical Error:**\nThe error here is a formal fallacy. While we know that",
+      "tokens": 100,
+      "latency_s": 17.154033422470093
+    },
+    {
+      "id": 21,
+      "category": "reasoning",
+      "prompt": "A bat and ball cost $1.10 total. The bat costs $1 more than the ball. How much does the ball cost?",
+      "response": "The ball costs **$0.05** (5 cents).\n\nHere is the breakdown:\n*   **Ball:** $0.05\n*   **Bat:** $1.05 (which is exactly $1.00 more than the ball)\n*   **Total:** $1.10",
+      "tokens": 68,
+      "latency_s": 17.03103280067444
+    },
+    {
+      "id": 22,
+      "category": "reasoning",
+      "prompt": "What comes next: 2, 4, 8, 16, ?",
+      "response": "The next number is **32**.\n\n**Reasoning:**\nThis is a geometric sequence where each number is multiplied by 2 to get the next term ($2^n$):\n*   2 \u00d7 2 = 4\n*   4 \u00d7 2 = 8\n*   8 \u00d7 2 = 16\n*   16 \u00d7 2 = **32**",
+      "tokens": 83,
+      "latency_s": 5.266742467880249
+    },
+    {
+      "id": 23,
+      "category": "reasoning",
+      "prompt": "If it takes 5 machines 5 minutes to make 5 widgets, how long for 100 machines to make 100 widgets?",
+      "response": "It takes **5 minutes**.\n\n**Here is the breakdown:**\nIf 5 machines make 5 widgets in 5 minutes, it means **1 machine takes 5 minutes to make 1 widget**.\n\nSince all the machines are working at the same time (simultaneously), 100 machines will each be working on their own single widget. After 5 minutes, every one of those 100 machines will have finished its 1 widget, resulting in 10",
+      "tokens": 100,
+      "latency_s": 5.609700918197632
+    },
+    {
+      "id": 24,
+      "category": "reasoning",
+      "prompt": "Is the statement \"this sentence is false\" true or false?",
+      "response": "The statement \"this sentence is false\" is a classic example of the **Liar Paradox**. It is neither true nor false; rather, it is a logical contradiction that defies a binary truth value.\n\nHere is the breakdown of why it cannot be solved:\n\n**1. If we assume the sentence is TRUE:**\nIf the sentence is true, then what it says must be the case. The sentence says it is false. Therefore, if it is true, it must be **false**.",
+      "tokens": 100,
+      "latency_s": 7.50693154335022
+    },
+    {
+      "id": 25,
+      "category": "instruction",
+      "prompt": "List exactly 3 colors.",
+      "response": "Red, Blue, Green",
+      "tokens": 6,
+      "latency_s": 1.0697929859161377
+    },
+    {
+      "id": 26,
+      "category": "instruction",
+      "prompt": "Respond with only the word YES.",
+      "response": "YES",
+      "tokens": 2,
+      "latency_s": 0.1839768886566162
+    },
+    {
+      "id": 27,
+      "category": "instruction",
+      "prompt": "What is 2+2? Respond in exactly one word.",
+      "response": "Four",
+      "tokens": 2,
+      "latency_s": 0.5310750007629395
+    },
+    {
+      "id": 28,
+      "category": "instruction",
+      "prompt": "Translate \"hello\" to Spanish.",
+      "response": "The most common translation for \"hello\" in Spanish is:\n\n**Hola**\n\nDepending on the context, you might also use these time-specific greetings:\n\n*   **Buenos d\u00edas** (Good morning)\n*   **Buenas tardes** (Good afternoon)\n*   **Buenas noches** (Good evening/night)",
+      "tokens": 68,
+      "latency_s": 8.278629779815674
+    },
+    {
+      "id": 29,
+      "category": "instruction",
+      "prompt": "Name the 4 seasons.",
+      "response": "The four seasons are:\n\n1.  **Spring**\n2.  **Summer**\n3.  **Autumn** (also known as **Fall**)\n4.  **Winter**",
+      "tokens": 41,
+      "latency_s": 4.499021530151367
+    }
+  ]
+}

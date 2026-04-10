@@ -1,0 +1,309 @@
+{
+  "num_prompts": 550,
+  "errors": 0,
+  "elapsed_s": 32.96991944313049,
+  "total_prompt_tokens": 4603,
+  "total_completion_tokens": 25667,
+  "token_details": [
+    {
+      "prompt": "Write a haiku about travel.",
+      "prompt_tokens": 7,
+      "completion_tokens": 1,
+      "total_tokens": 8
+    },
+    {
+      "prompt": "Who invented the telephone?",
+      "prompt_tokens": 5,
+      "completion_tokens": 2,
+      "total_tokens": 7
+    },
+    {
+      "prompt": "Debug this: `for i in range(11): print(i`",
+      "prompt_tokens": 16,
+      "completion_tokens": 50,
+      "total_tokens": 66
+    },
+    {
+      "prompt": "What are the pros and cons of ocean?",
+      "prompt_tokens": 9,
+      "completion_tokens": 50,
+      "total_tokens": 59
+    },
+    {
+      "prompt": "What causes volcanoes?",
+      "prompt_tokens": 4,
+      "completion_tokens": 50,
+      "total_tokens": 54
+    },
+    {
+      "prompt": "Compare Python and dogs.",
+      "prompt_tokens": 5,
+      "completion_tokens": 50,
+      "total_tokens": 55
+    },
+    {
+      "prompt": "What is 13 * 19?",
+      "prompt_tokens": 10,
+      "completion_tokens": 50,
+      "total_tokens": 60
+    },
+    {
+      "prompt": "Debug this: `for i in range(1000): print(i`",
+      "prompt_tokens": 18,
+      "completion_tokens": 50,
+      "total_tokens": 68
+    },
+    {
+      "prompt": "Explain recursion in programming.",
+      "prompt_tokens": 5,
+      "completion_tokens": 50,
+      "total_tokens": 55
+    },
+    {
+      "prompt": "What is the capital of Thailand?",
+      "prompt_tokens": 7,
+      "completion_tokens": 50,
+      "total_tokens": 57
+    },
+    {
+      "prompt": "If all students are animals, and Rex is a {a_type}, is {name} a {b_type}?",
+      "prompt_tokens": 25,
+      "completion_tokens": 50,
+      "total_tokens": 75
+    },
+    {
+      "prompt": "Translate 'good morning' to Japanese.",
+      "prompt_tokens": 8,
+      "completion_tokens": 50,
+      "total_tokens": 58
+    },
+    {
+      "prompt": "What is 23 * 11?",
+      "prompt_tokens": 10,
+      "completion_tokens": 50,
+      "total_tokens": 60
+    },
+    {
+      "prompt": "What is machine learning?",
+      "prompt_tokens": 5,
+      "completion_tokens": 50,
+      "total_tokens": 55
+    },
+    {
+      "prompt": "Is 17 a prime number?",
+      "prompt_tokens": 8,
+      "completion_tokens": 50,
+      "total_tokens": 58
+    },
+    {
+      "prompt": "Say hello in Japanese.",
+      "prompt_tokens": 5,
+      "completion_tokens": 50,
+      "total_tokens": 55
+    },
+    {
+      "prompt": "Calculate the area of a circle with radius 17.",
+      "prompt_tokens": 12,
+      "completion_tokens": 50,
+      "total_tokens": 62
+    },
+    {
+      "prompt": "What's the weather like in Sydney?",
+      "prompt_tokens": 9,
+      "completion_tokens": 50,
+      "total_tokens": 59
+    },
+    {
+      "prompt": "What's the factorial of 4?",
+      "prompt_tokens": 9,
+      "completion_tokens": 50,
+      "total_tokens": 59
+    },
+    {
+      "prompt": "How does DNA replication work?",
+      "prompt_tokens": 6,
+      "completion_tokens": 50,
+      "total_tokens": 56
+    },
+    {
+      "prompt": "Recommend a book about dogs.",
+      "prompt_tokens": 6,
+      "completion_tokens": 50,
+      "total_tokens": 56
+    },
+    {
+      "prompt": "Explain rainbow formation in simple terms.",
+      "prompt_tokens": 7,
+      "completion_tokens": 50,
+      "total_tokens": 57
+    },
+    {
+      "prompt": "Is 29 a prime number?",
+      "prompt_tokens": 8,
+      "completion_tokens": 50,
+      "total_tokens": 58
+    },
+    {
+      "prompt": "Who invented penicillin?",
+      "prompt_tokens": 4,
+      "completion_tokens": 50,
+      "total_tokens": 54
+    },
+    {
+      "prompt": "Compare summer and dogs.",
+      "prompt_tokens": 5,
+      "completion_tokens": 50,
+      "total_tokens": 55
+    },
+    {
+      "prompt": "Hi, how are you?",
+      "prompt_tokens": 6,
+      "completion_tokens": 50,
+      "total_tokens": 56
+    },
+    {
+      "prompt": "Debug this: `for i in range(7): print(i`",
+      "prompt_tokens": 15,
+      "completion_tokens": 50,
+      "total_tokens": 65
+    },
+    {
+      "prompt": "Compare summer and Java.",
+      "prompt_tokens": 5,
+      "completion_tokens": 50,
+      "total_tokens": 55
+    },
+    {
+      "prompt": "Solve: 19x + 13 = 10",
+      "prompt_tokens": 14,
+      "completion_tokens": 50,
+      "total_tokens": 64
+    },
+    {
+      "prompt": "Say hello in JavaScript.",
+      "prompt_tokens": 5,
+      "completion_tokens": 50,
+      "total_tokens": 55
+    },
+    {
+      "prompt": "How tall is the Great Wall of China?",
+      "prompt_tokens": 9,
+      "completion_tokens": 50,
+      "total_tokens": 59
+    },
+    {
+      "prompt": "What rhymes with cat?",
+      "prompt_tokens": 5,
+      "completion_tokens": 50,
+      "total_tokens": 55
+    },
+    {
+      "prompt": "How does nuclear fusion work?",
+      "prompt_tokens": 6,
+      "completion_tokens": 50,
+      "total_tokens": 56
+    },
+    {
+      "prompt": "Write a haiku about chess.",
+      "prompt_tokens": 7,
+      "completion_tokens": 50,
+      "total_tokens": 57
+    },
+    {
+      "prompt": "Write a Python function to check palindrome.",
+      "prompt_tokens": 8,
+      "completion_tokens": 50,
+      "total_tokens": 58
+    },
+    {
+      "prompt": "How tall is the Eiffel Tower?",
+      "prompt_tokens": 7,
+      "completion_tokens": 50,
+      "total_tokens": 57
+    },
+    {
+      "prompt": "Write a Python function to binary search.",
+      "prompt_tokens": 8,
+      "completion_tokens": 50,
+      "total_tokens": 58
+    },
+    {
+      "prompt": "Debug this: `for i in range(31): print(i`",
+      "prompt_tokens": 16,
+      "completion_tokens": 50,
+      "total_tokens": 66
+    },
+    {
+      "prompt": "How does nuclear fusion work?",
+      "prompt_tokens": 6,
+      "completion_tokens": 50,
+      "total_tokens": 56
+    },
+    {
+      "prompt": "How tall is Mount Everest?",
+      "prompt_tokens": 6,
+      "completion_tokens": 50,
+      "total_tokens": 56
+    },
+    {
+      "prompt": "Explain tides in simple terms.",
+      "prompt_tokens": 6,
+      "completion_tokens": 50,
+      "total_tokens": 56
+    },
+    {
+      "prompt": "How does nuclear fusion work?",
+      "prompt_tokens": 6,
+      "completion_tokens": 50,
+      "total_tokens": 56
+    },
+    {
+      "prompt": "Say hello in Japanese.",
+      "prompt_tokens": 5,
+      "completion_tokens": 50,
+      "total_tokens": 55
+    },
+    {
+      "prompt": "Compare cats and dogs.",
+      "prompt_tokens": 5,
+      "completion_tokens": 50,
+      "total_tokens": 55
+    },
+    {
+      "prompt": "Translate 'good morning' to Java.",
+      "prompt_tokens": 8,
+      "completion_tokens": 50,
+      "total_tokens": 58
+    },
+    {
+      "prompt": "Recommend a book about chess.",
+      "prompt_tokens": 6,
+      "completion_tokens": 50,
+      "total_tokens": 56
+    },
+    {
+      "prompt": "What is the capital of Egypt?",
+      "prompt_tokens": 7,
+      "completion_tokens": 50,
+      "total_tokens": 57
+    },
+    {
+      "prompt": "Debug this: `for i in range(3): print(i`",
+      "prompt_tokens": 15,
+      "completion_tokens": 50,
+      "total_tokens": 65
+    },
+    {
+      "prompt": "Is 17 a prime number?",
+      "prompt_tokens": 8,
+      "completion_tokens": 50,
+      "total_tokens": 58
+    },
+    {
+      "prompt": "Calculate the area of a circle with radius 19.",
+      "prompt_tokens": 12,
+      "completion_tokens": 1,
+      "total_tokens": 13
+    }
+  ]
+}
