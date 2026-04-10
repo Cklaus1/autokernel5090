@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -33,7 +34,8 @@ class MockBackend(LLMBackend):
     def __init__(self, response: str = "def fix(): return 42"):
         self._response = response
 
-    async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+    async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None,
+                       priority=None, **kwargs):
         return self._response
 
     async def stream(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
@@ -768,6 +770,642 @@ class TestConfig:
 
         config = load_config("/nonexistent/path.yaml")
         assert "primary" in config.backends
+
+
+# ---------------------------------------------------------------------------
+# Session Affinity tests
+# ---------------------------------------------------------------------------
+
+
+class _NamedMockBackend(MockBackend):
+    """MockBackend subclass with a configurable name."""
+
+    def __init__(self, response: str = "def fix(): return 42", backend_name: str = "mock"):
+        super().__init__(response)
+        self._backend_name = backend_name
+
+    @property
+    def name(self) -> str:
+        return self._backend_name
+
+
+class TestSessionAffinity:
+    def test_same_session_routes_to_same_backend(self):
+        from fusen_solver.backends.multi_backend import MultiBackend
+
+        backend_a = _NamedMockBackend("response_a", backend_name="gpu_0")
+        backend_b = _NamedMockBackend("response_b", backend_name="gpu_1")
+
+        multi = MultiBackend(
+            default=backend_a,
+            routes={"review": backend_b},
+        )
+
+        # First call with session_id picks default
+        result1 = multi.route(session_id="session_abc")
+        assert result1.name == "gpu_0"
+
+        # Second call with same session_id should route to same backend
+        result2 = multi.route(session_id="session_abc")
+        assert result2.name == "gpu_0"
+
+    def test_different_sessions_can_route_differently(self):
+        from fusen_solver.backends.multi_backend import MultiBackend
+
+        default = _NamedMockBackend("default", backend_name="default")
+        review_be = _NamedMockBackend("review", backend_name="review_be")
+
+        multi = MultiBackend(
+            default=default,
+            routes={"review": review_be},
+        )
+
+        # Session 1 goes to default
+        multi.route(session_id="s1")
+        # Session 2 via strategy goes to review_be
+        multi.route(strategy_name="review", session_id="s2")
+
+        assert multi.route(session_id="s1").name == "default"
+        assert multi.route(session_id="s2").name == "review_be"
+
+    def test_session_ttl_expiry(self):
+        import time as _time
+        from fusen_solver.backends.multi_backend import MultiBackend
+
+        default = _NamedMockBackend("default", backend_name="default")
+        review_be = _NamedMockBackend("review", backend_name="review_be")
+
+        multi = MultiBackend(
+            default=default,
+            routes={"review": review_be},
+            session_ttl=10.0,
+        )
+
+        # Assign session to review backend
+        multi.route(strategy_name="review", session_id="s1")
+        assert multi.route(session_id="s1").name == "review_be"
+
+        # Simulate time passing beyond TTL
+        multi._session_map["s1"] = ("review_be", _time.monotonic() - 20.0)
+        # Session expired, should fall back to default
+        result = multi.route(session_id="s1")
+        assert result.name == "default"
+
+    @pytest.mark.asyncio
+    async def test_generate_with_session_id(self):
+        from fusen_solver.backends.multi_backend import MultiBackend
+
+        default = _NamedMockBackend("default_resp", backend_name="default")
+        other = _NamedMockBackend("other_resp", backend_name="other")
+
+        multi = MultiBackend(default=default, routes={"review": other})
+
+        # First request assigns session to default
+        r1 = await multi.generate([{"role": "user", "content": "hi"}], session_id="s1")
+        assert r1 == "default_resp"
+
+        # Strategy-routed request with different session
+        r2 = await multi.generate_with_strategy(
+            [{"role": "user", "content": "hi"}],
+            "review",
+            session_id="s2",
+        )
+        assert r2 == "other_resp"
+
+
+# ---------------------------------------------------------------------------
+# Priority tests
+# ---------------------------------------------------------------------------
+
+
+class TestPriority:
+    def test_short_strategies(self):
+        from fusen_solver.core.priority import compute_priority
+
+        p = Problem(description="test")
+        assert compute_priority(p, "review") == 1
+        assert compute_priority(p, "analyst") == 1
+
+    def test_medium_strategies(self):
+        from fusen_solver.core.priority import compute_priority
+
+        p = Problem(description="test")
+        assert compute_priority(p, "direct") == 2
+        assert compute_priority(p, "test_first") == 2
+
+    def test_long_strategies(self):
+        from fusen_solver.core.priority import compute_priority
+
+        p = Problem(description="test")
+        assert compute_priority(p, "rewrite") == 3
+        assert compute_priority(p, "decompose") == 3
+
+    def test_constraint_override(self):
+        from fusen_solver.core.priority import compute_priority
+
+        p = Problem(description="test", constraints=["keep it short"])
+        # Constraint "short" overrides strategy
+        assert compute_priority(p, "rewrite") == 1
+
+    def test_unknown_strategy_default(self):
+        from fusen_solver.core.priority import compute_priority
+
+        p = Problem(description="test")
+        assert compute_priority(p, "unknown_strategy") == 2
+
+
+# ---------------------------------------------------------------------------
+# Agent Memory tests
+# ---------------------------------------------------------------------------
+
+
+class TestAgentMemory:
+    def test_remember_and_recall(self):
+        from fusen_solver.learning.tracker import AgentMemory
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+
+        try:
+            mem = AgentMemory(path=path)
+            mem.remember("bug_fix", "Check for null pointers first", source="direct")
+            mem.remember("bug_fix", "Off-by-one errors often hide in loop bounds", source="review")
+            mem.remember("feature", "Start with the interface", source="direct")
+
+            # Recall bug_fix insights
+            results = mem.recall("bug_fix")
+            assert len(results) == 2
+            assert "null pointers" in results[0] or "null pointers" in results[1]
+
+            # Recall feature insights
+            results = mem.recall("feature")
+            assert len(results) == 1
+            assert "interface" in results[0]
+
+            # Recall unknown type returns empty
+            results = mem.recall("nonexistent")
+            assert results == []
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_recall_respects_limit(self):
+        from fusen_solver.learning.tracker import AgentMemory
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+
+        try:
+            mem = AgentMemory(path=path)
+            for i in range(10):
+                mem.remember("bug_fix", f"Insight number {i}")
+
+            results = mem.recall("bug_fix", limit=3)
+            assert len(results) == 3
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_used_count_increments(self):
+        from fusen_solver.learning.tracker import AgentMemory
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+
+        try:
+            mem = AgentMemory(path=path)
+            mem.remember("bug_fix", "Check null")
+
+            mem.recall("bug_fix")
+            assert mem.memories[0]["used_count"] == 1
+
+            mem.recall("bug_fix")
+            assert mem.memories[0]["used_count"] == 2
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_persistence(self):
+        from fusen_solver.learning.tracker import AgentMemory
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+
+        try:
+            mem1 = AgentMemory(path=path)
+            mem1.remember("bug_fix", "Always check edge cases")
+
+            # Reload from disk
+            mem2 = AgentMemory(path=path)
+            assert len(mem2.memories) == 1
+            assert mem2.memories[0]["insight"] == "Always check edge cases"
+
+            results = mem2.recall("bug_fix")
+            assert len(results) == 1
+            assert results[0] == "Always check edge cases"
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_get_all(self):
+        from fusen_solver.learning.tracker import AgentMemory
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+
+        try:
+            mem = AgentMemory(path=path)
+            mem.remember("bug_fix", "Insight A")
+            mem.remember("feature", "Insight B")
+
+            all_memories = mem.get_all()
+            assert len(all_memories) == 2
+            assert all_memories[0]["type"] == "bug_fix"
+            assert all_memories[1]["type"] == "feature"
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_empty_file_returns_empty(self):
+        from fusen_solver.learning.tracker import AgentMemory
+
+        mem = AgentMemory(path="/tmp/fusen_nonexistent_memory_test.json")
+        assert mem.memories == []
+        assert mem.recall("anything") == []
+
+
+# ---------------------------------------------------------------------------
+# Solver integration with memory and priority
+# ---------------------------------------------------------------------------
+
+
+class TestSolverMemoryAndPriority:
+    @pytest.mark.asyncio
+    async def test_agent_injects_memory(self):
+        """Verify that recalled memories appear in the system prompt."""
+        from fusen_solver.learning.tracker import AgentMemory
+
+        prompts_seen: list[str] = []
+
+        class CapturingBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7,
+                               stop=None, priority=None, **kwargs):
+                for msg in messages:
+                    if msg["role"] == "system":
+                        prompts_seen.append(msg["content"])
+                return "```python\ndef fix(): return 42\n```"
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            mem_path = f.name
+
+        try:
+            memory = AgentMemory(path=mem_path)
+            memory.remember("bug_fix", "Always check for None before accessing .value")
+
+            backend = CapturingBackend()
+            solver = FusenSolver(
+                backend=backend,
+                default_n=1,
+                auto_n=False,
+                memory=memory,
+            )
+
+            problem = Problem(
+                description="Fix the crash",
+                context={"app.py": "x = obj.value"},
+                problem_type="bug_fix",
+                solve_mode="isolated",
+            )
+
+            await solver.solve(problem)
+
+            # At least one system prompt should contain the memory insight
+            assert any("Always check for None" in p for p in prompts_seen)
+        finally:
+            Path(mem_path).unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_agent_passes_priority(self):
+        """Verify that priority is computed and passed to the backend."""
+        priorities_seen: list[int] = []
+
+        class PriorityCapturingBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7,
+                               stop=None, priority=None, **kwargs):
+                if priority is not None:
+                    priorities_seen.append(priority)
+                return "```python\ndef fix(): return 42\n```"
+
+        backend = PriorityCapturingBackend()
+        solver = FusenSolver(backend=backend, default_n=2, auto_n=False)
+
+        problem = Problem(
+            description="Fix the bug",
+            context={"app.py": "x = 1"},
+            problem_type="bug_fix",
+            solve_mode="isolated",
+        )
+
+        await solver.solve(problem)
+
+        assert len(priorities_seen) >= 2
+        # All priorities should be valid (1, 2, or 3)
+        assert all(1 <= p <= 3 for p in priorities_seen)
+
+    @pytest.mark.asyncio
+    async def test_feedback_stores_insight(self):
+        """Verify that record_feedback extracts and stores an insight."""
+        from fusen_solver.learning.tracker import AgentMemory
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            mem_path = f.name
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            db_path = f.name
+
+        try:
+            memory = AgentMemory(path=mem_path)
+            learning = LearningEngine(db_path=db_path)
+            backend = MockBackend(response="The key insight was checking bounds.")
+            solver = FusenSolver(
+                backend=backend,
+                learning_engine=learning,
+                memory=memory,
+                auto_n=False,
+            )
+
+            solutions = [
+                Solution(strategy_used="direct", score=0.9, explanation="Fixed by checking bounds."),
+                Solution(strategy_used="review", score=0.7, explanation="Reviewed the code."),
+            ]
+            await solver.record_feedback(SAMPLE_PROBLEM, solutions, accepted_idx=0)
+
+            # Memory should now contain an insight
+            all_mems = memory.get_all()
+            assert len(all_mems) == 1
+            assert "checking bounds" in all_mems[0]["insight"].lower() or len(all_mems[0]["insight"]) > 0
+            assert all_mems[0]["source"] == "direct"
+        finally:
+            Path(mem_path).unlink(missing_ok=True)
+            Path(db_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Racing mode tests
+# ---------------------------------------------------------------------------
+
+
+class TestRacingSolve:
+    """Tests for solve_racing() -- first accepted solution wins, others cancelled."""
+
+    @pytest.mark.asyncio
+    async def test_racing_first_completes_others_cancelled(self):
+        """First agent to finish with score >= threshold wins, others are cancelled."""
+
+        class SequentialBackend(MockBackend):
+            """Agents finish in order with different delays."""
+
+            def __init__(self):
+                super().__init__()
+                self._call_count = 0
+
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+                self._call_count += 1
+                idx = self._call_count
+                if idx == 1:
+                    return "```python\ndef fix(): return 42\n```\n\nFixed immediately."
+                else:
+                    await asyncio.sleep(10)
+                    return "```python\ndef fix(): return 99\n```\n\nSlow fix."
+
+        backend = SequentialBackend()
+        solver = FusenSolver(backend=backend, default_n=4, auto_n=False)
+
+        problem = Problem(
+            description="Fix the bug",
+            context={"app.py": "def f(): pass"},
+            problem_type="bug_fix",
+            solve_mode="racing",
+            racing_accept_threshold=0.0,  # accept anything
+            racing_timeout=5.0,
+        )
+
+        result = await solver.solve(problem)
+
+        assert result.mode == "racing"
+        assert len(result.solutions) >= 1
+        assert result.best is not None
+        assert result.total_time_s < 5.0
+
+        racing_stats = result.metadata.get("racing_stats")
+        assert racing_stats is not None
+        assert racing_stats["cancelled_agents"] >= 1
+        assert racing_stats["kv_savings_pct"] > 0
+
+    @pytest.mark.asyncio
+    async def test_racing_timeout_takes_best(self):
+        """When no agent beats threshold before timeout, take best available."""
+
+        class SlowBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+                await asyncio.sleep(10)
+                return "```python\ndef fix(): return 42\n```"
+
+        backend = SlowBackend()
+        solver = FusenSolver(backend=backend, default_n=3, auto_n=False)
+
+        problem = Problem(
+            description="Fix the bug",
+            context={"app.py": "def f(): pass"},
+            problem_type="bug_fix",
+            solve_mode="racing",
+            racing_accept_threshold=0.99,
+            racing_timeout=0.5,
+        )
+
+        result = await solver.solve(problem)
+
+        assert result.mode == "racing"
+        racing_stats = result.metadata.get("racing_stats")
+        assert racing_stats is not None
+        assert racing_stats["timed_out"] is True
+        assert result.total_time_s < 2.0
+
+    @pytest.mark.asyncio
+    async def test_racing_rejection_then_acceptance(self):
+        """First agent rejected (low score), second agent accepted."""
+
+        call_count = 0
+
+        class RejectThenAcceptBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+                nonlocal call_count
+                call_count += 1
+                idx = call_count
+                if idx == 1:
+                    return "no code here"
+                elif idx == 2:
+                    await asyncio.sleep(0.1)
+                    return "```python\ndef fix():\n    return 42\n```\n\nProper fix."
+                else:
+                    await asyncio.sleep(10)
+                    return "slow"
+
+        backend = RejectThenAcceptBackend()
+        solver = FusenSolver(backend=backend, default_n=3, auto_n=False)
+
+        problem = Problem(
+            description="Fix the off-by-one error in pagination",
+            context={"app.py": "def paginate(items, page, size):\n    start = page * size\n    return items[start:start+size]\n"},
+            problem_type="bug_fix",
+            solve_mode="racing",
+            racing_accept_threshold=0.0,
+            racing_timeout=5.0,
+        )
+
+        result = await solver.solve(problem)
+
+        assert result.mode == "racing"
+        assert len(result.solutions) >= 1
+        assert result.best is not None
+
+    @pytest.mark.asyncio
+    async def test_racing_kv_savings_tracked(self):
+        """KV savings stats are properly tracked."""
+
+        class FastBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+                return "```python\ndef fix(): return 42\n```"
+
+        backend = FastBackend()
+        solver = FusenSolver(backend=backend, default_n=4, auto_n=False)
+
+        problem = Problem(
+            description="Fix the bug",
+            context={"app.py": "def f(): pass"},
+            problem_type="bug_fix",
+            solve_mode="racing",
+            racing_accept_threshold=0.0,
+            racing_timeout=5.0,
+        )
+
+        result = await solver.solve(problem)
+
+        assert result.mode == "racing"
+        racing_stats = result.metadata.get("racing_stats")
+        assert racing_stats is not None
+        assert "kv_savings_pct" in racing_stats
+        assert "cancelled_agents" in racing_stats
+        assert "winner_idx" in racing_stats
+        assert "agent_times" in racing_stats
+        assert isinstance(racing_stats["agent_times"], list)
+
+    @pytest.mark.asyncio
+    async def test_racing_problem_defaults(self):
+        """Problem has correct racing defaults."""
+        p = Problem(description="test")
+        assert p.racing_accept_threshold == 0.7
+        assert p.racing_timeout == 30.0
+
+    def test_racing_learning_engine_record(self):
+        """Learning engine records racing win positions."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            db_path = f.name
+
+        try:
+            engine = LearningEngine(db_path=db_path, min_data=2)
+
+            engine.record_racing_win("bug_fix", num_agents=4, winner_position=0, winner_time=1.5)
+            engine.record_racing_win("bug_fix", num_agents=4, winner_position=1, winner_time=2.0)
+            engine.record_racing_win("bug_fix", num_agents=4, winner_position=0, winner_time=1.2)
+
+            assert len(engine._racing_history) == 3
+
+            stats = engine.get_stats()
+            assert "_racing_stats" in stats
+            assert "bug_fix" in stats["_racing_stats"]
+            assert stats["_racing_stats"]["bug_fix"]["total_races"] == 3
+            assert stats["_racing_stats"]["bug_fix"]["avg_winner_position"] == round((0 + 1 + 0) / 3, 2)
+
+            n = engine.suggest_racing_n(Problem(description="fix", problem_type="bug_fix"))
+            assert 2 <= n <= 8
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+    def test_racing_learning_persistence(self):
+        """Racing history persists across engine instances."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            db_path = f.name
+
+        try:
+            engine1 = LearningEngine(db_path=db_path)
+            engine1.record_racing_win("feature", num_agents=3, winner_position=2, winner_time=3.0)
+
+            engine2 = LearningEngine(db_path=db_path)
+            assert len(engine2._racing_history) == 1
+            assert engine2._racing_history[0]["type"] == "feature"
+            assert engine2._racing_history[0]["winner_position"] == 2
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+
+class TestRacingCoordinator:
+    """Tests for the RacingCoordinator and CancellableRequest."""
+
+    def test_cancellable_request_defaults(self):
+        from fusen_solver.streaming import CancellableRequest
+
+        req = CancellableRequest(agent_idx=0)
+        assert not req.cancelled
+        assert req.elapsed == 0.0
+
+    @pytest.mark.asyncio
+    async def test_cancel_request(self):
+        from fusen_solver.streaming import CancellableRequest
+
+        req = CancellableRequest(agent_idx=0, start_time=time.perf_counter())
+        await req.cancel()
+        assert req.cancelled
+        assert req.end_time > 0
+
+    @pytest.mark.asyncio
+    async def test_double_cancel_is_safe(self):
+        from fusen_solver.streaming import CancellableRequest
+
+        req = CancellableRequest(agent_idx=0, start_time=time.perf_counter())
+        await req.cancel()
+        await req.cancel()  # should not raise
+        assert req.cancelled
+
+    def test_racing_stats_kv_savings(self):
+        from fusen_solver.streaming import RacingStats
+
+        stats = RacingStats(total_agents=4, cancelled_agents=3)
+        assert stats.kv_savings_pct == 75.0
+
+        stats2 = RacingStats(total_agents=1, cancelled_agents=0)
+        assert stats2.kv_savings_pct == 0.0
+
+    @pytest.mark.asyncio
+    async def test_coordinator_cancel_all_except(self):
+        from fusen_solver.streaming import RacingCoordinator
+
+        coord = RacingCoordinator()
+        req0 = coord.register(0)
+        req1 = coord.register(1)
+        req2 = coord.register(2)
+
+        await coord.cancel_all_except(winner_idx=1)
+
+        assert req0.cancelled
+        assert not req1.cancelled
+        assert req2.cancelled
+        assert coord.stats.cancelled_agents == 2
+
+    @pytest.mark.asyncio
+    async def test_coordinator_cancel_all(self):
+        from fusen_solver.streaming import RacingCoordinator
+
+        coord = RacingCoordinator()
+        coord.register(0)
+        coord.register(1)
+
+        await coord.cancel_all()
+        assert coord.stats.cancelled_agents == 2
 
 
 # ---------------------------------------------------------------------------

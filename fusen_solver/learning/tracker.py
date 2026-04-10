@@ -3,6 +3,8 @@
 Records which strategies win for which problem types, then uses Bayesian
 updating to adjust strategy weights over time. More data = more confident
 = stronger weighting toward what works.
+
+Also provides AgentMemory for persistent cross-session insight storage.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time as _time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,6 +68,8 @@ class LearningEngine:
         self._history: list[dict[str, Any]] = []
         # Mode history: tracks which solve mode works for which problem type
         self._mode_history: list[dict[str, Any]] = []
+        # Racing history: tracks win positions to optimize agent count
+        self._racing_history: list[dict[str, Any]] = []
         self._load()
 
     def record(
@@ -188,8 +193,70 @@ class LearningEngine:
             accepted,
         )
 
+    def record_racing_win(
+        self,
+        problem_type: str,
+        num_agents: int,
+        winner_position: int,
+        winner_time: float,
+    ) -> None:
+        """Record which agent position won a racing solve.
+
+        This data is used to optimize the number of racing agents over time.
+        If agent 0 or 1 always wins, we can reduce agent count to save KV cache.
+
+        Args:
+            problem_type: The type of problem.
+            num_agents: Total number of agents that raced.
+            winner_position: Index of the winning agent (0-based).
+            winner_time: Time in seconds for the winner to complete.
+        """
+        self._racing_history.append({
+            "type": problem_type,
+            "num_agents": num_agents,
+            "winner_position": winner_position,
+            "winner_time": winner_time,
+        })
+        self._save()
+        logger.info(
+            "Recorded racing win: type=%s, agents=%d, winner=pos_%d, time=%.2fs",
+            problem_type,
+            num_agents,
+            winner_position,
+            winner_time,
+        )
+
+    def suggest_racing_n(self, problem: Problem) -> int:
+        """Suggest optimal number of racing agents based on win history.
+
+        If early agents (position 0-1) consistently win, fewer agents are
+        needed. If later agents win, more diversity helps.
+
+        Returns:
+            Suggested number of racing agents (2-8).
+        """
+        ptype = problem.problem_type if problem.problem_type != "auto" else "unknown"
+        type_entries = [h for h in self._racing_history if h["type"] == ptype]
+
+        if len(type_entries) < self.min_data:
+            return 4  # default
+
+        # Calculate average winning position
+        avg_winner_pos = sum(h["winner_position"] for h in type_entries) / len(type_entries)
+        max_agents_used = max(h["num_agents"] for h in type_entries)
+
+        # If winners are usually in the first 2 positions, 3 agents suffice
+        if avg_winner_pos < 1.0:
+            return 2
+        elif avg_winner_pos < 2.0:
+            return 3
+        elif avg_winner_pos < 3.0:
+            return 4
+        else:
+            return min(max_agents_used + 1, 8)
+
     def suggest_mode(self, problem: Problem) -> str:
-        """Suggest isolated or collaborative mode based on history.
+        """Suggest solve mode based on history.
 
         Uses historical acceptance rates when enough data is available,
         otherwise falls back to heuristics based on problem type.
@@ -198,7 +265,7 @@ class LearningEngine:
             problem: The problem to solve.
 
         Returns:
-            "isolated" or "collaborative".
+            One of "isolated", "collaborative", or "decomposed".
         """
         ptype = problem.problem_type if problem.problem_type != "auto" else "unknown"
         type_history = [h for h in self._mode_history if h["type"] == ptype]
@@ -207,16 +274,28 @@ class LearningEngine:
             # Not enough data -- use heuristic
             if ptype in ("bug_fix", "refactor", "architecture"):
                 return "collaborative"  # complex tasks benefit from rounds
+            if ptype == "feature":
+                # Multi-file features benefit from decomposition
+                desc_lower = problem.description.lower()
+                multi_file_keywords = [
+                    "rest api", "web api", "cli tool", "library",
+                    "project", "application", "service", "package",
+                ]
+                if any(kw in desc_lower for kw in multi_file_keywords):
+                    return "decomposed"
             return "isolated"  # simple tasks don't need rounds
 
-        # Enough data -- use acceptance rates
-        collab_entries = [h["accepted"] for h in type_history if h["mode"] == "collaborative"]
-        isolated_entries = [h["accepted"] for h in type_history if h["mode"] == "isolated"]
+        # Enough data -- use acceptance rates across all recorded modes
+        mode_rates: dict[str, float] = {}
+        for mode_name in ("isolated", "collaborative", "decomposed"):
+            entries = [h["accepted"] for h in type_history if h["mode"] == mode_name]
+            if entries:
+                mode_rates[mode_name] = sum(entries) / len(entries)
 
-        collab_rate = sum(collab_entries) / len(collab_entries) if collab_entries else 0.0
-        isolated_rate = sum(isolated_entries) / len(isolated_entries) if isolated_entries else 0.0
+        if not mode_rates:
+            return "isolated"
 
-        return "collaborative" if collab_rate > isolated_rate else "isolated"
+        return max(mode_rates, key=mode_rates.get)  # type: ignore[arg-type]
 
     def get_stats(self) -> dict[str, Any]:
         """Return a summary of learning stats for display."""
@@ -253,6 +332,33 @@ class LearningEngine:
                     ) if data["total"] > 0 else 0.0
             summary["_mode_stats"] = mode_stats
 
+        # Include racing stats if any exist
+        if self._racing_history:
+            racing_stats: dict[str, dict[str, Any]] = {}
+            for entry in self._racing_history:
+                ptype = entry["type"]
+                if ptype not in racing_stats:
+                    racing_stats[ptype] = {
+                        "total_races": 0,
+                        "win_positions": [],
+                        "avg_winner_position": 0.0,
+                        "avg_winner_time": 0.0,
+                    }
+                racing_stats[ptype]["total_races"] += 1
+                racing_stats[ptype]["win_positions"].append(entry["winner_position"])
+            # Compute averages
+            for ptype, data in racing_stats.items():
+                positions = data["win_positions"]
+                data["avg_winner_position"] = round(
+                    sum(positions) / len(positions), 2
+                ) if positions else 0.0
+                type_entries = [h for h in self._racing_history if h["type"] == ptype]
+                times = [h["winner_time"] for h in type_entries]
+                data["avg_winner_time"] = round(
+                    sum(times) / len(times), 2
+                ) if times else 0.0
+            summary["_racing_stats"] = racing_stats
+
         return summary
 
     # ------------------------------------------------------------------
@@ -268,6 +374,7 @@ class LearningEngine:
             data = json.loads(self.db_path.read_text())
             self._history = data.get("history", [])
             self._mode_history = data.get("mode_history", [])
+            self._racing_history = data.get("racing_history", [])
 
             # Rebuild stats from history
             for entry in self._history:
@@ -289,7 +396,106 @@ class LearningEngine:
         """Save history to disk."""
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {"history": self._history, "mode_history": self._mode_history}
+            data = {
+                "history": self._history,
+                "mode_history": self._mode_history,
+                "racing_history": self._racing_history,
+            }
             self.db_path.write_text(json.dumps(data, indent=2))
         except Exception as e:
             logger.warning("Failed to save history: %s", e)
+
+
+DEFAULT_MEMORY_PATH = "~/.fusen_solver/memory.json"
+
+
+class AgentMemory:
+    """Persistent memory of insights from past problems.
+
+    Stores reusable insights keyed by problem type so that agents can
+    learn from previous sessions.  Insights are ranked by a combination
+    of recency and usage count -- frequently recalled insights float to
+    the top.
+    """
+
+    def __init__(self, path: str = DEFAULT_MEMORY_PATH):
+        self.path = Path(path).expanduser()
+        self.memories: list[dict[str, Any]] = []
+        self._load()
+
+    def remember(
+        self,
+        problem_type: str,
+        insight: str,
+        source: str = "auto",
+    ) -> None:
+        """Store an insight from a solved problem.
+
+        Args:
+            problem_type: Category of problem (bug_fix, feature, ...).
+            insight: A concise, reusable insight string.
+            source: Which agent/strategy produced this insight.
+        """
+        self.memories.append({
+            "type": problem_type,
+            "insight": insight,
+            "source": source,
+            "timestamp": _time.time(),
+            "used_count": 0,
+        })
+        self._save()
+        logger.info("Remembered insight for %s: %s", problem_type, insight[:80])
+
+    def recall(self, problem_type: str, limit: int = 5) -> list[str]:
+        """Recall relevant insights for a problem type.
+
+        Returns the top *limit* insights sorted by a score that combines
+        recency with usage popularity.  Each recalled insight has its
+        ``used_count`` incremented so the ranking adapts over time.
+
+        Args:
+            problem_type: Category to filter by.
+            limit: Maximum number of insights to return.
+
+        Returns:
+            List of insight strings, most relevant first.
+        """
+        relevant = [m for m in self.memories if m["type"] == problem_type]
+        # Score: timestamp (recency) + used_count * 1000 (popularity)
+        relevant.sort(
+            key=lambda m: m["timestamp"] + m["used_count"] * 1000,
+            reverse=True,
+        )
+        top = relevant[:limit]
+        if top:
+            for m in top:
+                m["used_count"] += 1
+            self._save()
+        return [m["insight"] for m in top]
+
+    def get_all(self) -> list[dict[str, Any]]:
+        """Return all stored memories for inspection."""
+        return list(self.memories)
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def _load(self) -> None:
+        """Load memories from disk."""
+        if not self.path.exists():
+            return
+        try:
+            data = json.loads(self.path.read_text())
+            self.memories = data if isinstance(data, list) else data.get("memories", [])
+            logger.info("Loaded %d memories from %s", len(self.memories), self.path)
+        except Exception as e:
+            logger.warning("Failed to load memories: %s", e)
+
+    def _save(self) -> None:
+        """Persist memories to disk."""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(self.memories, indent=2))
+        except Exception as e:
+            logger.warning("Failed to save memories: %s", e)

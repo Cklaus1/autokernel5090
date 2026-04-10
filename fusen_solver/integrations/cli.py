@@ -137,6 +137,20 @@ def _print_result(result: SolveResult) -> None:
         print(f"  {DIM}{result.merged.explanation[:500]}{RESET}")
         print()
 
+    # Racing stats
+    racing_stats = result.metadata.get("racing_stats") if result.metadata else None
+    if racing_stats:
+        print(f"{BOLD}  Racing Stats:{RESET}")
+        print(f"    Winner: agent #{racing_stats['winner_idx']}")
+        print(f"    Winner time: {racing_stats['winner_time_s']:.2f}s")
+        print(f"    Cancelled agents: {racing_stats['cancelled_agents']}")
+        print(f"    KV cache saved: {racing_stats['kv_savings_pct']:.0f}%")
+        if racing_stats['timed_out']:
+            print(f"    {BOLD}(timed out -- took best available){RESET}")
+        if racing_stats['rejections_before_accept'] > 0:
+            print(f"    Rejections before accept: {racing_stats['rejections_before_accept']}")
+        print()
+
 
 async def cmd_solve(args: argparse.Namespace) -> None:
     """Solve a problem using parallel agents."""
@@ -164,6 +178,8 @@ async def cmd_solve(args: argparse.Namespace) -> None:
         problem_type=args.type or "auto",
         solve_mode=args.mode or "auto",
         max_rounds=args.rounds,
+        racing_accept_threshold=args.racing_threshold,
+        racing_timeout=args.racing_timeout,
     )
 
     mode_label = f", mode={problem.solve_mode}" if problem.solve_mode != "auto" else ""
@@ -172,6 +188,8 @@ async def cmd_solve(args: argparse.Namespace) -> None:
     print(f"  Codebase: {args.codebase} ({len(context)} files)")
     if problem.solve_mode == "collaborative":
         print(f"  Rounds: {problem.max_rounds}")
+    if problem.solve_mode == "racing":
+        print(f"  Racing: threshold={problem.racing_accept_threshold}, timeout={problem.racing_timeout}s")
     print()
 
     result = await solver.solve(problem, merge=args.merge)
@@ -233,24 +251,40 @@ async def cmd_interactive(args: argparse.Namespace) -> None:
 
 async def cmd_stats(args: argparse.Namespace) -> None:
     """Show learning engine statistics."""
-    from fusen_solver.learning.tracker import LearningEngine
+    from fusen_solver.learning.tracker import AgentMemory, LearningEngine
 
     engine = LearningEngine()
     stats = engine.get_stats()
 
     if not stats:
         print("No learning data yet. Solve some problems first.")
-        return
+    else:
+        print(f"\n{BOLD}Learning Engine Stats{RESET}\n")
+        for ptype, strategies in stats.items():
+            if ptype.startswith("_"):
+                continue
+            print(f"  {BOLD}{ptype}{RESET}:")
+            for name, data in strategies.items():
+                print(
+                    f"    {name}: {data['wins']}/{data['attempts']} wins "
+                    f"({data['win_rate']:.1%}), confidence={data['confidence']:.1%}"
+                )
+            print()
 
-    print(f"\n{BOLD}Learning Engine Stats{RESET}\n")
-    for ptype, strategies in stats.items():
-        print(f"  {BOLD}{ptype}{RESET}:")
-        for name, data in strategies.items():
-            print(
-                f"    {name}: {data['wins']}/{data['attempts']} wins "
-                f"({data['win_rate']:.1%}), confidence={data['confidence']:.1%}"
-            )
-        print()
+    # Show agent memory stats
+    memory = AgentMemory()
+    all_memories = memory.get_all()
+    if all_memories:
+        print(f"\n{BOLD}Agent Memory ({len(all_memories)} insights){RESET}\n")
+        by_type: dict[str, list] = {}
+        for m in all_memories:
+            by_type.setdefault(m["type"], []).append(m)
+        for ptype, mems in sorted(by_type.items()):
+            print(f"  {BOLD}{ptype}{RESET}: {len(mems)} insights")
+            for m in mems[-3:]:  # show last 3 per type
+                used = m.get("used_count", 0)
+                print(f"    - {m['insight'][:100]} (used {used}x)")
+            print()
 
 
 def main() -> None:
@@ -272,9 +306,9 @@ def main() -> None:
     p_solve.add_argument("--no-auto-n", action="store_true", help="Disable auto agent count")
     p_solve.add_argument(
         "--mode",
-        choices=["isolated", "collaborative", "auto"],
+        choices=["isolated", "collaborative", "decomposed", "racing", "auto"],
         default="auto",
-        help="Solve mode: isolated (single round), collaborative (multi-round), auto (data-driven)",
+        help="Solve mode: isolated (single round), collaborative (multi-round), decomposed (per-file parallel), racing (first-wins), auto (data-driven)",
     )
     p_solve.add_argument(
         "--rounds",
@@ -282,7 +316,24 @@ def main() -> None:
         default=3,
         help="Max rounds for collaborative mode (default: 3)",
     )
+    p_solve.add_argument(
+        "--racing-threshold",
+        type=float,
+        default=0.7,
+        help="Score threshold for accepting a racing solution (default: 0.7)",
+    )
+    p_solve.add_argument(
+        "--racing-timeout",
+        type=float,
+        default=30.0,
+        help="Max seconds for racing mode before taking best available (default: 30)",
+    )
     p_solve.add_argument("--output", help="Save results to JSON file")
+    p_solve.add_argument(
+        "--session-id",
+        help="Session ID for backend affinity (e.g. hash of codebase). "
+             "Ensures all requests for the same codebase hit the same GPU.",
+    )
 
     # interactive
     p_int = subparsers.add_parser("interactive", help="Interactive mode")

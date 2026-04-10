@@ -29,8 +29,11 @@ class Problem:
     tests: list[str] = field(default_factory=list)  # test commands to validate
     language: str = "auto"
     priority: str = "quality"  # "quality", "speed", "balanced"
-    solve_mode: str = "auto"  # "isolated", "collaborative", "auto"
+    solve_mode: str = "auto"  # "isolated", "collaborative", "decomposed", "racing", "auto"
     max_rounds: int = 3  # for collaborative mode
+    # Racing mode options
+    racing_accept_threshold: float = 0.7  # score above this = accept immediately
+    racing_timeout: float = 30.0  # max seconds before taking best available
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

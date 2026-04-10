@@ -51,6 +51,8 @@ class OpenAIBackend(LLMBackend):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         stop: list[str] | None = None,
+        priority: int | None = None,
+        **kwargs,
     ) -> str:
         import aiohttp
 
@@ -62,6 +64,8 @@ class OpenAIBackend(LLMBackend):
         }
         if stop:
             payload["stop"] = stop
+        if priority is not None:
+            payload["priority"] = priority
 
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=self._timeout)
