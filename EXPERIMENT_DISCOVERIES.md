@@ -201,3 +201,13 @@ Current:                    6,685 tok/s (FusenCache eager)
 **Found:** FP8 + 2:4 sparse: 3.1x at M=512 (prefill). But cuSPARSELt minimum M=32 — decode (M=1-8) fails. NVFP4 + 2:4 doesn't exist (no FP4 sparse variant in CUTLASS/cuSPARSELt).
 **Quality:** 37% error without fine-tuning. Needs SparseGPT/Wanda pruning + fine-tuning.
 **Use case:** Prefill acceleration only, after model fine-tuning. Not applicable to decode.
+
+## Discovery #32: Prefix caching works with FusenCache (40% hit rate)
+**Expected:** Might be incompatible (different KV format)
+**Found:** Fully compatible. 40.3% hit rate with shared system prompt across 5 requests. At production scale (1000 requests, 200-token prompt): 99.9% prefill compute reduction, ~12.4 MB KV savings.
+**Caveat:** FusenCache 64-token block granularity — prompts aligned to 64-token boundaries get better hit rates.
+
+## Discovery #33: DFlash (diffusion speculative decoding) exists for Qwen3.5 but NOT Gemma4
+**Expected:** Diffusion requires diffusion-trained model
+**Found:** DFlash uses a diffusion-trained DRAFT model with a standard autoregressive TARGET. Already got 94.6 tok/s on Qwen3.5 in this repo. But no DFlash draft exists for Gemma4 26B MoE. EAGLE3 drafts exist for Gemma4 31B (dense) but not 26B MoE.
+**Options:** Train DFlash draft for Gemma4 26B (2-3 days GPU), or test if 31B EAGLE3 draft works with 26B MoE.
