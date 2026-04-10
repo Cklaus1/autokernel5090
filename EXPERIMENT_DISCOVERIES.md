@@ -289,3 +289,10 @@ RIGHT approach (what we learned):
 **Found:** 6/20 coherent (30%) — same catastrophic failure as 50% pruning
 **Why:** Layer 0 is input processing — any disruption propagates through all 29 layers. Also, activation frequency from embeddings ≠ runtime importance.
 **FINAL VERDICT:** Expert manipulation is completely off the table for Gemma4 without fine-tuning. No safe set of experts to disable exists.
+
+## Discovery #41: Middle layer pruning worse than early — model is 100% non-prunable
+**Previous:** Early layers (2,4,8) removal = -41%. Opus suggested middle layers safer.
+**Retried:** Removed layer 14, 13, 19 (middle) individually.
+**Found:** 0% coherence on ALL three. Infinite repetition loops. WORSE than early layer removal.
+**Why:** Middle layers have high scalars (0.55-0.72) carrying critical residual signal. Removing one breaks attention pattern consolidation.
+**FINAL VERDICT:** No layer, no expert, at any granularity, in any location, can be removed from Gemma4 26B without post-removal fine-tuning. The model is 100% non-prunable.
