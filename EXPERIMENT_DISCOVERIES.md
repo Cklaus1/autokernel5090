@@ -296,3 +296,59 @@ RIGHT approach (what we learned):
 **Found:** 0% coherence on ALL three. Infinite repetition loops. WORSE than early layer removal.
 **Why:** Middle layers have high scalars (0.55-0.72) carrying critical residual signal. Removing one breaks attention pattern consolidation.
 **FINAL VERDICT:** No layer, no expert, at any granularity, in any location, can be removed from Gemma4 26B without post-removal fine-tuning. The model is 100% non-prunable.
+
+---
+
+## Meta-Discovery: Pruning vs Augmentation
+
+**Pruning (DEAD for Gemma4 26B MoE):**
+- Expert pruning at 50% → garbage (Discovery #17)
+- Expert pruning at 0.13% (5 experts) → garbage (Discovery #40)  
+- Layer pruning early (2,4,8) → -41% quality (Discovery #25)
+- Layer pruning middle (13,14,19) → 0% coherent (Discovery #41)
+- Cross-layer KV sharing → impossible, zero similarity (Discovery #18)
+
+**VERDICT:** Gemma4 26B MoE is a tightly-coupled system. Removing ANY component at ANY granularity causes catastrophic failure without post-removal fine-tuning. The 128-expert × 30-layer architecture has no redundancy — every piece is load-bearing.
+
+**Augmentation (ALIVE — adds capability without removing anything):**
+
+| Approach | What it does | Status | Expected gain |
+|---|---|---|---|
+| Diffusion adapter | Adds draft head, freezes 26B | Planned (5-7 days PRO 6000) | 2-3x single-user |
+| Two-tier brain | Offloads cold parts to CPU, keeps ALL | Built (32 tests) | +20-26% throughput, 100% quality |
+| Multi-model routing | Different models per task difficulty | Built (MoA config) | Big brain for hard, small brain for easy |
+| EAGLE3/DFlash draft | Adds small draft model alongside 26B | Needs training (1-2 days) | 2-3x single-user |
+| FusenCache KV compression | Compresses cache, not model | Working (6,685 tok/s) | 4x KV capacity |
+| NVFP4 quantization | Compresses representation, all info preserved | Deployed | 17GB vs 52GB |
+
+**The principle:** Don't subtract from the model — ADD to it or COMPRESS its representation. The model's knowledge is distributed across ALL components with no safe subset to remove.
+
+---
+
+## Updated Roadmap (Post-Pruning)
+
+### This Week (before PRO 6000)
+1. ✅ Fix E2E test (model name) — done
+2. 🔄 Fix FusenCache metadata builder — Opus agent working
+3. ❌ N-gram spec decode — confirmed hurts, skip
+
+### Next Week (PRO 6000 arrives)
+1. DP=2 benchmark (scripts ready)
+2. FusenDiffusion gate test (4-hour experiment)
+3. Mixture of Agents: Gemma4 26B (GPU 0) + Qwen3.5-9B on SGLang (GPU 1)
+4. 32K context testing
+5. Disaggregated prefill/decode test
+
+### This Month
+1. Train diffusion adapter (if gate test passes)
+2. Train EAGLE3 draft for 26B
+3. FusenCache metadata fix → CUDA graphs
+4. Block size + scheduler tuning sweep
+5. Upstream PRs (fused kernel + inductor finding)
+
+### Off the Table (confirmed dead)
+- Any form of model pruning (experts, layers, weights)
+- N-gram speculative decode on novel code
+- FP8 attention improvement (KV layout constraint)
+- DeepGemm on SM120 (binary incompatible)
+- Cross-layer KV sharing
