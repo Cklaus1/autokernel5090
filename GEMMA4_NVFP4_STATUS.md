@@ -25,17 +25,43 @@
   - PR #39406 — Robust quantized MoE expert weight loading
 
 ### WORKING (Apr 9, 2026)
-- Model loads in 12s, 17.24 GiB VRAM
+- Model loads in 8s, 17.24 GiB VRAM
 - Inference produces coherent, high-quality output
-- ~18 tok/s generation (single request, enforce_eager, no CUDA graphs)
-- 10 GiB KV cache, ~43K token capacity, ~15x concurrency at 4096 ctx
 - Backends: FlashAttention v2 (sliding), Triton (global), FlashInfer+Cutlass (NVFP4 linear), VLLM_CUTLASS (NVFP4 MoE)
 
+### Benchmark Results (RTX 5090, 32GB)
+
+**Best config: CUDA graphs + BF16 KV cache (no --enforce-eager)**
+
+| Batch/Concurrency | Gen tok/s | Total tok/s | Avg Latency |
+|-------------------|----------|-------------|-------------|
+| B=1, C=1 | 127 | 139 | 2.01s |
+| B=4, C=4 | 383 | 428 | 2.67s |
+| B=16, C=16 | 1,221 | 1,359 | 3.33s |
+| B=32, C=32 | **2,071** | 2,295 | 3.90s |
+| B=128, C=32 | 2,059 | 2,281 | 3.96s |
+
+**Config comparison (single request, B=1):**
+
+| Config | tok/s | Notes |
+|--------|-------|-------|
+| enforce_eager | 18 | No CUDA graphs, no torch.compile |
+| CUDA graphs + BF16 KV | **127** | 7x faster — best config |
+| CUDA graphs + FP8 KV | 31 | 4x slower — FlashInfer FP8 overhead on Gemma4 head dims |
+
+**FP8 KV cache findings:**
+- 2x KV capacity (43K → 87K tokens, 15x → 30x concurrency)
+- But 4x slower throughput due to FlashInfer FP8 attention overhead
+- Only worthwhile for long-context serving where capacity matters more than speed
+
+**Perplexity:** 701.4 on WikiText-2 (50 chunks × 2048 tokens)
+- This is an IT model on raw text — high absolute PPL is expected
+- RedHat's GSM8K: 97.0% → 95.6% (1.4% accuracy drop from NVFP4)
+
 ### NOT YET TESTED
-- CUDA graphs (remove --enforce-eager)
-- FP8 KV cache
-- Batch throughput benchmarking
-- Perplexity / quality eval vs BF16 original
+- FusenCache custom KV compression (k8v4, k4v4)
+- Multi-GPU tensor parallelism
+- Fused MoE kernel optimization
 
 ---
 
