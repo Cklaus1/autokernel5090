@@ -11,7 +11,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 import logging
+import os
 import torch
+
+# Enable bounds checking via FUSEN_DEBUG=1 for diagnosing OOB crashes.
+# Disabled by default (zero overhead in production).
+_DEBUG = os.environ.get("FUSEN_DEBUG", "0") == "1"
 
 from vllm.v1.attention.backend import (
     AttentionBackend,
@@ -550,28 +555,75 @@ class FusenKVImpl(AttentionImplBase):
         is_decode_only = (attn_metadata.max_query_len == 1)
 
         # ---- Store K/V into quantized cache ----
-        # Use num_actual_tokens to avoid storing padding tokens
+        # For decode-only under CUDA graphs: use full tensors (no dynamic
+        # slicing). Padded slot_mapping entries are -1 and the store kernel
+        # skips them (slot < 0 guard). For mixed prefill+decode (eager): use
+        # num_actual_tokens to avoid storing garbage from padding positions.
         if attn_metadata.slot_mapping is not None and key is not None:
-            self.store_fn(
-                key[:num_tokens], value[:num_tokens], kv_cache,
-                attn_metadata.slot_mapping[:num_tokens], layer, self.num_kv_heads,
-            )
+            if is_decode_only:
+                # Full tensor — safe because padded slots are -1
+                self.store_fn(
+                    key, value, kv_cache,
+                    attn_metadata.slot_mapping, layer, self.num_kv_heads,
+                )
+            else:
+                self.store_fn(
+                    key[:num_tokens], value[:num_tokens], kv_cache,
+                    attn_metadata.slot_mapping[:num_tokens], layer, self.num_kv_heads,
+                )
 
         if is_decode_only:
             # ---- Pure decode: all requests have 1 query token ----
-            q = query[:B]
+            # CUDA graph compatibility: use the full tensor dimension from
+            # query.shape[0] instead of slicing to B=num_reqs. Under CUDA
+            # graphs, tensors are pre-allocated at the padded batch size and
+            # seq_lens for padded entries are 0, causing the decode kernel to
+            # skip them (split_start >= split_end early return + safe_sum
+            # guard outputs zeros). Dynamic slicing (query[:B]) would create
+            # tensors with shapes that differ from the captured graph,
+            # causing CUDA assertion failures at batch sizes where the actual
+            # B doesn't match a captured graph size (e.g. B=65 padded to 72).
+            padded_B = query.shape[0]
+            q = query
             if q.ndim == 2:
-                q = q.reshape(B, self.num_heads, self.head_size)
+                q = q.reshape(padded_B, self.num_heads, self.head_size)
             q = q.contiguous()
+
+            # Bounds checking (FUSEN_DEBUG=1 to enable)
+            if _DEBUG:
+                num_blocks = kv_cache.shape[0]
+                block_size = kv_cache.shape[1]
+                max_slots = num_blocks * block_size
+                bt = attn_metadata.block_table[:B]
+                sl = attn_metadata.seq_lens[:B]
+                # Only check entries with seq_len > 0
+                active = sl > 0
+                if active.any():
+                    active_bt = bt[active]
+                    max_blk = active_bt.max().item()
+                    if max_blk >= num_blocks:
+                        logger.error(
+                            "FUSEN_DEBUG: block_table OOB! max_block=%d >= "
+                            "num_blocks=%d, B=%d, padded_B=%d",
+                            max_blk, num_blocks, B, padded_B,
+                        )
+                    max_slot = max_blk * block_size + (block_size - 1)
+                    scales_cap = layer._fusen_scales.shape[0]
+                    if max_slot >= scales_cap:
+                        logger.error(
+                            "FUSEN_DEBUG: slot OOB! max_slot=%d >= "
+                            "scales_capacity=%d, B=%d",
+                            max_slot, scales_cap, B,
+                        )
 
             attn_out = self.decode_fn(
                 q, kv_cache, layer._fusen_scales,
-                attn_metadata.block_table[:B],
-                attn_metadata.seq_lens[:B],
+                attn_metadata.block_table,
+                attn_metadata.seq_lens,
                 self.scale, self.num_kv_heads,
             )
 
-            output[:B] = attn_out.to(output.dtype)
+            output[:padded_B] = attn_out.to(output.dtype)
         else:
             # ---- Mixed prefill+decode or pure prefill ----
             qsl = attn_metadata.query_start_loc
