@@ -185,17 +185,20 @@ def evaluate_perplexity_api(api_base: str, model_name: str,
     if not chunks:
         raise RuntimeError("No chunks created from dataset. Check dataset availability.")
 
-    # Send prompt_token_ids directly to avoid decode/re-encode drift
+    # Decode chunks to text for the completions API
+    # (vLLM's OpenAI-compatible /v1/completions doesn't accept prompt_token_ids)
+    prompt_texts = [tokenizer.decode(chunk, skip_special_tokens=False) for chunk in chunks]
+
     total_nll = 0.0
     total_tokens = 0
     errors = 0
     t0 = time.time()
 
     def _eval_chunk(chunk_idx_and_chunk):
-        chunk_idx, chunk = chunk_idx_and_chunk
+        chunk_idx, prompt_text = chunk_idx_and_chunk
         payload = {
             "model": server_model,
-            "prompt_token_ids": chunk,
+            "prompt": prompt_text,
             "max_tokens": 0,
             "logprobs": 1,
             "echo": True,
@@ -220,7 +223,7 @@ def evaluate_perplexity_api(api_base: str, model_name: str,
             return chunk_idx, 0.0, 0, str(e)
 
     with ThreadPoolExecutor(max_workers=num_concurrent) as pool:
-        futures = [pool.submit(_eval_chunk, (i, c)) for i, c in enumerate(chunks)]
+        futures = [pool.submit(_eval_chunk, (i, p)) for i, p in enumerate(prompt_texts)]
         completed = 0
         for future in as_completed(futures):
             chunk_idx, nll, count, err = future.result()
@@ -241,8 +244,7 @@ def evaluate_perplexity_api(api_base: str, model_name: str,
     elapsed = time.time() - t0
 
     if total_tokens == 0:
-        raise RuntimeError("No logprobs collected. Check server supports echo+logprobs "
-                           "and prompt_token_ids.")
+        raise RuntimeError("No logprobs collected. Check server supports echo+logprobs.")
 
     avg_nll = total_nll / total_tokens
     ppl = math.exp(avg_nll)
