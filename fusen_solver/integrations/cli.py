@@ -249,6 +249,108 @@ async def cmd_interactive(args: argparse.Namespace) -> None:
         _print_result(result)
 
 
+async def cmd_shadow(args: argparse.Namespace) -> None:
+    """Run fusen_solver as a shadow on a task, optionally comparing to BCode output."""
+    from fusen_solver.integrations.bcode_shadow import BCodeShadow
+
+    config = load_config(args.config)
+    shadow = BCodeShadow(
+        config=config,
+        timeout_s=args.timeout,
+    )
+
+    # Load task/PRD
+    prd = args.prd
+    if args.prd_file:
+        prd = Path(args.prd_file).read_text()
+    if not prd:
+        print("Error: provide --prd or --prd-file", file=sys.stderr)
+        sys.exit(1)
+
+    # Load optional BCode output for comparison
+    bcode_output = None
+    if args.bcode_output:
+        bcode_output = json.loads(Path(args.bcode_output).read_text())
+
+    print(f"\n{BOLD}Fusen Solver Shadow Mode{RESET}")
+    print(f"  Task: {prd[:200]}")
+    print(f"  Workspace: {args.workspace}")
+    if bcode_output:
+        print(f"  BCode output: {args.bcode_output}")
+    print()
+
+    result = await shadow.shadow_run(
+        task=prd,
+        codebase_path=args.workspace,
+        bcode_output=bcode_output,
+    )
+
+    print(f"{BOLD}Shadow Result:{RESET}")
+    print(f"  Fusen score: {result.fusen_score:.3f}")
+    print(f"  Fusen time:  {result.fusen_time_s:.1f}s")
+    print(f"  Fusen files: {result.fusen_files}")
+    print(f"  Fusen mode:  {result.fusen_mode_used}")
+    print(f"  Strategy:    {result.fusen_strategy_used}")
+    if bcode_output:
+        print(f"  BCode score: {result.bcode_score:.3f}")
+        print(f"  Winner:      {BOLD}{result.winner}{RESET}")
+    if result.notes:
+        print(f"  Notes:       {result.notes}")
+    print()
+
+
+async def cmd_shadow_stats(args: argparse.Namespace) -> None:
+    """Show aggregated shadow comparison statistics."""
+    from fusen_solver.integrations.bcode_shadow import BCodeShadow
+
+    shadow = BCodeShadow()
+    stats = shadow.get_stats()
+
+    if stats["total_runs"] == 0:
+        print("No shadow runs recorded yet. Run 'fusen-solver shadow' first.")
+        return
+
+    print(f"\n{BOLD}Shadow Mode Statistics{RESET}\n")
+    print(f"  Total runs:     {stats['total_runs']}")
+    print(f"  Fusen win rate: {stats['fusen_win_rate']:.1%}")
+    print(f"  BCode win rate: {stats['bcode_win_rate']:.1%}")
+    print(f"  Tie rate:       {stats['tie_rate']:.1%}")
+    print(f"  Avg fusen score: {stats['avg_fusen_score']:.3f}")
+    print(f"  Avg bcode score: {stats['avg_bcode_score']:.3f}")
+    print(f"  Avg fusen time:  {stats['avg_fusen_time_s']:.1f}s")
+    print(f"  Avg bcode time:  {stats['avg_bcode_time_s']:.1f}s")
+    if stats.get("trend"):
+        print(f"  Trend:          {stats['trend']}")
+    print()
+
+
+async def cmd_shadow_promote(args: argparse.Namespace) -> None:
+    """Check if fusen_solver should be promoted from shadow to primary."""
+    from fusen_solver.integrations.bcode_shadow import BCodeShadow
+
+    shadow = BCodeShadow()
+    stats = shadow.get_stats()
+    should = shadow.should_promote(
+        min_runs=args.min_runs,
+        min_win_rate=args.min_win_rate,
+    )
+
+    print(f"\n{BOLD}Promotion Check{RESET}\n")
+    print(f"  Total runs:     {stats['total_runs']} (min: {args.min_runs})")
+    print(f"  Fusen win rate: {stats['fusen_win_rate']:.1%} (min: {args.min_win_rate:.1%})")
+
+    if should:
+        print(f"\n  {BOLD}PROMOTE: fusen_solver meets promotion criteria.{RESET}")
+    else:
+        reasons = []
+        if stats["total_runs"] < args.min_runs:
+            reasons.append(f"need {args.min_runs - stats['total_runs']} more runs")
+        if stats["fusen_win_rate"] < args.min_win_rate:
+            reasons.append(f"win rate {stats['fusen_win_rate']:.1%} < {args.min_win_rate:.1%}")
+        print(f"\n  NOT YET: {'; '.join(reasons)}")
+    print()
+
+
 async def cmd_stats(args: argparse.Namespace) -> None:
     """Show learning engine statistics."""
     from fusen_solver.learning.tracker import AgentMemory, LearningEngine
@@ -340,6 +442,31 @@ def main() -> None:
     p_int.add_argument("--codebase", required=True, help="Path to codebase")
     p_int.add_argument("--agents", type=int, default=4, help="Number of parallel agents")
 
+    # shadow
+    p_shadow = subparsers.add_parser("shadow", help="Run shadow comparison against BCode")
+    p_shadow.add_argument("--prd", help="Task / PRD description")
+    p_shadow.add_argument("--prd-file", help="File containing PRD description")
+    p_shadow.add_argument("--workspace", required=True, help="Path to workspace/codebase")
+    p_shadow.add_argument("--bcode-output", help="Path to BCode result JSON (for comparison)")
+    p_shadow.add_argument(
+        "--timeout", type=float, default=120.0,
+        help="Max seconds for shadow run (default: 120)",
+    )
+
+    # shadow-stats
+    subparsers.add_parser("shadow-stats", help="Show shadow comparison statistics")
+
+    # shadow-promote
+    p_promote = subparsers.add_parser("shadow-promote", help="Check if fusen_solver should be promoted")
+    p_promote.add_argument(
+        "--min-runs", type=int, default=50,
+        help="Minimum shadow runs required (default: 50)",
+    )
+    p_promote.add_argument(
+        "--min-win-rate", type=float, default=0.6,
+        help="Minimum fusen win rate for promotion (default: 0.6)",
+    )
+
     # stats
     subparsers.add_parser("stats", help="Show learning engine statistics")
 
@@ -349,6 +476,12 @@ def main() -> None:
         asyncio.run(cmd_solve(args))
     elif args.command == "interactive":
         asyncio.run(cmd_interactive(args))
+    elif args.command == "shadow":
+        asyncio.run(cmd_shadow(args))
+    elif args.command == "shadow-stats":
+        asyncio.run(cmd_shadow_stats(args))
+    elif args.command == "shadow-promote":
+        asyncio.run(cmd_shadow_promote(args))
     elif args.command == "stats":
         asyncio.run(cmd_stats(args))
 
