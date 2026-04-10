@@ -92,14 +92,14 @@ def make_decode_fn(spec: KVCacheSpec, block_kv=16, block_h=None,
     # Persistent buffer state (allocated on first call)
     _buffers = {}
 
-    def _get_buffers(B, Hq, D, device):
+    def _get_buffers(B, Hq, D, device, out_dtype=torch.float16):
         """Get or allocate persistent mid_out and output buffers."""
-        key = (B, Hq, D, device)
+        key = (B, Hq, D, device, out_dtype)
         if key not in _buffers:
             _buffers[key] = {
                 'mid_out': torch.empty(B, Hq, _num_kv_splits, D + 1,
                                        dtype=torch.float32, device=device),
-                'output': torch.empty(B, Hq, D, dtype=torch.float16, device=device),
+                'output': torch.empty(B, Hq, D, dtype=out_dtype, device=device),
             }
         return _buffers[key]
 
@@ -112,11 +112,21 @@ def make_decode_fn(spec: KVCacheSpec, block_kv=16, block_h=None,
 
         BLOCK_D = triton.next_power_of_2(D)
         BLOCK_KV = _block_kv
-        BLOCK_H = _block_h if _block_h is not None else min(8, kv_group_size)
+        # BLOCK_H: query heads per Triton program block.
+        # The kernel handles GQA by reading one KV head for each group
+        # of BLOCK_H query heads. VALID_BLOCK_H = min(BLOCK_H, kv_group_size)
+        # is the effective number of heads computed per block.
+        if _block_h is not None:
+            BLOCK_H = _block_h
+        else:
+            BLOCK_H = min(8, kv_group_size)
+        BLOCK_H = max(1, BLOCK_H)
+        # The grid parallelizes over head groups using VALID_BLOCK_H
+        VALID_BLOCK_H = BLOCK_H if kv_group_size > BLOCK_H else kv_group_size
         NUM_KV_SPLITS = _num_kv_splits
 
         if _persistent:
-            bufs = _get_buffers(B, Hq, D, query.device)
+            bufs = _get_buffers(B, Hq, D, query.device, query.dtype)
             mid_out = bufs['mid_out']
             output = bufs['output']
         else:
@@ -124,7 +134,7 @@ def make_decode_fn(spec: KVCacheSpec, block_kv=16, block_h=None,
                                   dtype=torch.float32, device=query.device)
             output = torch.empty(B, Hq, D, dtype=query.dtype, device=query.device)
 
-        num_head_groups = triton.cdiv(Hq, BLOCK_H)
+        num_head_groups = triton.cdiv(Hq, VALID_BLOCK_H)
         grid1 = (B, num_head_groups, NUM_KV_SPLITS)
 
         k_region_bytes = int(spec.k_bytes_per_dim * D)

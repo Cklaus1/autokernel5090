@@ -336,11 +336,96 @@ class FusenKVImpl(AttentionImplBase):
         layer._fc_scales = layer._fusen_scales
         self._scales_initialized = True
 
+    def _pytorch_decode(self, query, kv_cache, scales, block_table, seq_lens):
+        """PyTorch reference decode: dequantize from paged cache + attention.
+
+        Used for debugging to isolate Triton kernel issues.
+        """
+        B = query.shape[0]
+        Hq = self.num_heads
+        Hk = self.num_kv_heads
+        D = self.head_size
+        groups = Hq // Hk
+        block_size = kv_cache.shape[1]
+        k_bytes_per_dim = self.spec.k_bytes_per_dim
+        v_bytes_per_dim = self.spec.v_bytes_per_dim
+        k_region_bytes = int(k_bytes_per_dim * D)
+        v_region_start = k_region_bytes
+        min_sb = min(self.spec.k_scale_block, self.spec.v_scale_block)
+        num_sb = D // min_sb
+
+        q = query.reshape(B, Hq, D).float()
+        outputs = torch.zeros(B, Hq, D, device=query.device, dtype=torch.float32)
+
+        for b in range(B):
+            sl = seq_lens[b].item()
+            # Gather dequantized K/V for all positions: [sl, Hk, D]
+            k_all = torch.zeros(sl, Hk, D, device=query.device, dtype=torch.float32)
+            v_all = torch.zeros(sl, Hk, D, device=query.device, dtype=torch.float32)
+
+            for pos in range(sl):
+                blk_idx = pos // block_size
+                blk_off = pos % block_size
+                phys_block = block_table[b, blk_idx].item()
+                slot = phys_block * block_size + blk_off
+
+                for h in range(Hk):
+                    raw = kv_cache[phys_block, blk_off, h].to(torch.int32)
+
+                    # Dequantize K (4-bit: 2 values per byte)
+                    k_packed = raw[:k_region_bytes]
+                    k_lo = (k_packed & 0xF).float() - self.spec.k_sym_offset
+                    k_hi = ((k_packed >> 4) & 0xF).float() - self.spec.k_sym_offset
+                    # Apply scales
+                    for sb_idx in range(num_sb):
+                        sc = scales[slot, h, sb_idx, 0].float()
+                        s = sb_idx * min_sb // 2
+                        e = s + min_sb // 2
+                        k_lo[s:e] *= sc
+                        k_hi[s:e] *= sc
+                    # Interleave
+                    k_all[pos, h, 0::2] = k_lo
+                    k_all[pos, h, 1::2] = k_hi
+
+                    # Dequantize V (4-bit)
+                    v_packed = raw[v_region_start:v_region_start + k_region_bytes]
+                    v_lo = (v_packed & 0xF).float() - self.spec.v_sym_offset
+                    v_hi = ((v_packed >> 4) & 0xF).float() - self.spec.v_sym_offset
+                    for sb_idx in range(num_sb):
+                        sc = scales[slot, h, sb_idx, 1].float()
+                        s = sb_idx * min_sb // 2
+                        e = s + min_sb // 2
+                        v_lo[s:e] *= sc
+                        v_hi[s:e] *= sc
+                    v_all[pos, h, 0::2] = v_lo
+                    v_all[pos, h, 1::2] = v_hi
+
+            # GQA expand: [sl, Hk, D] -> [sl, Hq, D]
+            if groups > 1:
+                k_all = k_all.repeat_interleave(groups, dim=1)
+                v_all = v_all.repeat_interleave(groups, dim=1)
+
+            # Attention for this request
+            q_b = q[b]  # [Hq, D]
+            # k_all: [sl, Hq, D] -> transpose to [Hq, D, sl]
+            k_t = k_all.permute(1, 2, 0)  # [Hq, D, sl]
+            scores = torch.bmm(q_b.unsqueeze(1), k_t).squeeze(1)  # [Hq, sl]
+            scores = scores * self.scale
+            if self.logits_soft_cap > 0:
+                scores = self.logits_soft_cap * torch.tanh(scores / self.logits_soft_cap)
+            probs = torch.nn.functional.softmax(scores, dim=-1)  # [Hq, sl]
+            # v_all: [sl, Hq, D] -> [Hq, sl, D]
+            v_t = v_all.permute(1, 0, 2)
+            out_b = torch.bmm(probs.unsqueeze(1), v_t).squeeze(1)  # [Hq, D]
+            outputs[b] = out_b
+
+        return outputs.to(query.dtype)  # [B, Hq, D]
+
     def _prefill_with_sliding_window(self, query, key, value, n_prefill):
         """Run prefill attention with optional sliding window mask.
 
-        Uses torch SDPA for prefill (compute-bound, not memory-bound).
-        Applies causal + sliding window mask when sliding_window is set.
+        Uses manual attention for prefill to support logits_soft_cap (Gemma4).
+        Falls back to SDPA when no soft cap is needed.
         """
         pq = query[:n_prefill].reshape(1, n_prefill, self.num_heads, self.head_size)
         pk = key[:n_prefill].reshape(1, n_prefill, self.num_kv_heads, self.head_size)
@@ -357,35 +442,58 @@ class FusenKVImpl(AttentionImplBase):
         pk = pk.transpose(1, 2)
         pv = pv.transpose(1, 2)
 
-        # Build attention mask
-        if self.sliding_window is not None and n_prefill > self.sliding_window:
-            # Combined causal + sliding window mask
-            # Token i can attend to tokens [max(0, i - window + 1), i]
-            row_idx = torch.arange(n_prefill, device=query.device)
-            col_idx = torch.arange(n_prefill, device=query.device)
-            # Causal: col <= row
-            causal_mask = col_idx[None, :] <= row_idx[:, None]
-            # Sliding window: col >= row - window + 1
-            window_mask = col_idx[None, :] >= (row_idx[:, None] - self.sliding_window + 1)
-            attn_mask = causal_mask & window_mask
-            # SDPA expects [B, 1, N, N] or [N, N] bool mask
-            attn_mask = attn_mask.unsqueeze(0).unsqueeze(0)
+        # Use float32 for attention computation to avoid overflow
+        pq_f = pq.float()
+        pk_f = pk.float()
+        pv_f = pv.float()
 
-            prefill_out = torch.nn.functional.scaled_dot_product_attention(
-                pq.to(torch.float16), pk.to(torch.float16), pv.to(torch.float16),
-                attn_mask=attn_mask, scale=self.scale,
+        if self.logits_soft_cap > 0:
+            # Manual attention with logits_soft_cap (required for Gemma4).
+            # SDPA does not support soft_cap, so we compute attention manually.
+            # attn_weights: [B, H, N, N]
+            attn_weights = torch.matmul(pq_f, pk_f.transpose(-2, -1)) * self.scale
+
+            # Apply logits soft cap: cap * tanh(logits / cap)
+            attn_weights = self.logits_soft_cap * torch.tanh(
+                attn_weights / self.logits_soft_cap
             )
+
+            # Build causal mask
+            causal_mask = torch.ones(
+                n_prefill, n_prefill, dtype=torch.bool, device=query.device
+            ).tril()
+
+            # Sliding window mask
+            if self.sliding_window is not None and n_prefill > self.sliding_window:
+                row_idx = torch.arange(n_prefill, device=query.device)
+                col_idx = torch.arange(n_prefill, device=query.device)
+                window_mask = col_idx[None, :] >= (
+                    row_idx[:, None] - self.sliding_window + 1
+                )
+                causal_mask = causal_mask & window_mask
+
+            attn_weights = attn_weights.masked_fill(
+                ~causal_mask[None, None, :, :], float("-inf")
+            )
+            attn_weights = torch.nn.functional.softmax(attn_weights, dim=-1)
+            prefill_out = torch.matmul(attn_weights, pv_f).to(query.dtype)
         else:
-            # Pure causal mask (window >= prefill length or no window)
-            prefill_out = torch.nn.functional.scaled_dot_product_attention(
-                pq.to(torch.float16), pk.to(torch.float16), pv.to(torch.float16),
-                is_causal=True, scale=self.scale,
-            )
-
-        # Apply logits soft cap via custom SDPA is not directly supported,
-        # but for prefill this is acceptable since prefill quality impact
-        # is minimal (only affects the KV store, not generation quality).
-        # TODO: implement soft_cap in prefill via manual attention if needed.
+            # No soft cap needed -- use SDPA (faster, fused kernel)
+            if self.sliding_window is not None and n_prefill > self.sliding_window:
+                row_idx = torch.arange(n_prefill, device=query.device)
+                col_idx = torch.arange(n_prefill, device=query.device)
+                causal_mask = col_idx[None, :] <= row_idx[:, None]
+                window_mask = col_idx[None, :] >= (
+                    row_idx[:, None] - self.sliding_window + 1
+                )
+                attn_mask = (causal_mask & window_mask).unsqueeze(0).unsqueeze(0)
+                prefill_out = torch.nn.functional.scaled_dot_product_attention(
+                    pq_f, pk_f, pv_f, attn_mask=attn_mask, scale=self.scale,
+                ).to(query.dtype)
+            else:
+                prefill_out = torch.nn.functional.scaled_dot_product_attention(
+                    pq_f, pk_f, pv_f, is_causal=True, scale=self.scale,
+                ).to(query.dtype)
 
         return prefill_out.transpose(1, 2).reshape(n_prefill, -1)
 
@@ -410,7 +518,7 @@ class FusenKVImpl(AttentionImplBase):
             kv_cache: [num_blocks, block_size, num_kv_heads, slot_bytes] uint8
             attn_metadata: FusenKVMetadata with block_table, seq_lens, etc.
         Returns:
-            [num_tokens, num_heads * head_size]
+            output tensor [num_tokens, num_heads, head_size] (3D)
         """
         if attn_metadata is None:
             # Profiling run
@@ -420,29 +528,30 @@ class FusenKVImpl(AttentionImplBase):
 
         self._ensure_scales(layer, kv_cache, query.device)
 
-        num_tokens = query.shape[0]
+        num_tokens = attn_metadata.num_actual_tokens
         B = attn_metadata.num_reqs
 
         # Output is [num_tokens, num_heads, head_size] (3D) from vLLM
         if output is None:
-            output = query.new_zeros(num_tokens, self.num_heads, self.head_size)
+            output = query.new_zeros(query.shape[0], self.num_heads, self.head_size)
 
         # Determine if this is a decode-only batch (all queries are 1 token)
         is_decode_only = (attn_metadata.max_query_len == 1)
 
-        # ---- Store K/V into quantized cache (synchronous for CUDA graph safety) ----
+        # ---- Store K/V into quantized cache ----
+        # Use num_actual_tokens to avoid storing padding tokens
         if attn_metadata.slot_mapping is not None and key is not None:
             self.store_fn(
-                key, value, kv_cache,
-                attn_metadata.slot_mapping, layer, self.num_kv_heads,
+                key[:num_tokens], value[:num_tokens], kv_cache,
+                attn_metadata.slot_mapping[:num_tokens], layer, self.num_kv_heads,
             )
 
         if is_decode_only:
             # ---- Pure decode: all requests have 1 query token ----
-            # query is [B, Hq, D], our decode_fn expects [B, Hq, D]
             q = query[:B]
             if q.ndim == 2:
                 q = q.reshape(B, self.num_heads, self.head_size)
+            q = q.contiguous()
 
             attn_out = self.decode_fn(
                 q, kv_cache, layer._fusen_scales,
@@ -451,19 +560,18 @@ class FusenKVImpl(AttentionImplBase):
                 self.scale, self.num_kv_heads,
             )
 
-            # attn_out is [B, Hq, D] -- write directly into 3D output
-            output[:B] = attn_out
+            output[:B] = attn_out.to(output.dtype)
         else:
             # ---- Mixed prefill+decode or pure prefill ----
             qsl = attn_metadata.query_start_loc
             decode_indices = []
             for i in range(B):
                 q_start = qsl[i].item()
-                q_end = qsl[i + 1].item()
+                q_end = qsl[i + 1].item() if (i + 1) < qsl.shape[0] else num_tokens
                 q_len = q_end - q_start
 
                 if q_len > 1:
-                    # Prefill: use SDPA for this request
+                    # Prefill: use manual attention (supports soft_cap)
                     prefill_out = self._prefill_with_sliding_window(
                         query[q_start:q_end],
                         key[q_start:q_end],
@@ -472,7 +580,7 @@ class FusenKVImpl(AttentionImplBase):
                     )
                     # prefill_out is [n, Hq*D], reshape to [n, Hq, D]
                     output[q_start:q_end] = prefill_out.reshape(
-                        q_len, self.num_heads, self.head_size)
+                        q_len, self.num_heads, self.head_size).to(output.dtype)
                 else:
                     decode_indices.append(i)
 
@@ -482,7 +590,7 @@ class FusenKVImpl(AttentionImplBase):
                 dec_idx = torch.tensor(decode_indices, device=query.device)
                 dec_token_starts = qsl[dec_idx]
 
-                dec_queries = query[dec_token_starts]
+                dec_queries = query[dec_token_starts].contiguous()
                 if dec_queries.ndim == 2:
                     dec_queries = dec_queries.reshape(n_dec, self.num_heads, self.head_size)
 
@@ -493,6 +601,6 @@ class FusenKVImpl(AttentionImplBase):
                     self.scale, self.num_kv_heads,
                 )
 
-                output[dec_token_starts] = attn_out
+                output[dec_token_starts] = attn_out.to(output.dtype)
 
         return output
