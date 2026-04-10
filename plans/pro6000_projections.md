@@ -255,6 +255,217 @@ becomes particularly powerful — both GPUs process very large batches efficient
 | 32K context peak C         | 10x            | **15x**         | 20x             |
 | 32K context tok/s at C=15  | 2,500          | **3,500**       | 4,500           |
 
-**Single biggest win over RTX 5090:** Not throughput (1.7x), but **context and concurrency**.
+**Single biggest win over RTX 5090 (TP=2):** Not throughput (1.7x), but **context and concurrency**.
 With 6x the VRAM, we can run 32K context at 15x concurrency that was impossible before,
 and 128K context becomes feasible for the first time.
+
+**However, DP=2 is recommended for this specific hardware. See section below.**
+
+---
+
+## DP=2: Data Parallel — Two Independent Servers
+
+### Why DP=2 > TP=2 on PCIe
+
+The hardware has PCIe interconnect only — no NVLink. This changes the TP=2 calculus entirely.
+
+**TP=2 communication cost on PCIe:**
+
+Each decode step in a Transformer requires an AllReduce after every attention and MLP layer.
+Gemma4 has 62 decoder layers, each needing one AllReduce:
+
+```
+AllReduce latency (PCIe):  50-100 µs per all-reduce
+Layers per step:           62 (attention + MLP combined)
+Total overhead per token:  50-100 µs × 62 ≈ 3.1-6.2 ms
+```
+
+At single-token decode (C=1), the step time is ~11 ms. Adding 3-6 ms of PCIe overhead
+is a **30-55% throughput penalty** that cannot be amortized away — it is proportional
+to batch size, not fixed.
+
+**DP=2 communication cost:**
+
+Zero. Each GPU runs an independent vLLM server. Requests are distributed by fusen_solver
+using round-robin. No NCCL, no AllReduce, no coordination.
+
+### DP=2 Architecture
+
+```
+Client requests
+      │
+      ▼
+fusen_solver (round-robin router)
+  ├── GPU 0 → vllm-gpu0 (port 8000, CUDA_VISIBLE_DEVICES=0)
+  │           Full model (17 GB), 96 GB VRAM, full KV cache
+  └── GPU 1 → vllm-gpu1 (port 8001, CUDA_VISIBLE_DEVICES=1)
+              Full model (17 GB), 96 GB VRAM, full KV cache
+```
+
+Each GPU runs the full model independently. Requests that arrive together are
+served by whichever GPU is less loaded (or strict round-robin). The fusen_solver's
+`MultiBackend` mode handles failover, session affinity, and per-backend stats.
+
+### VRAM Budget per GPU (DP=2)
+
+```
+Total per GPU:             96.0 GB
+Model weights (full):     -17.0 GB   (NOT halved — each GPU runs full model)
+CUDA graphs:               -1.0 GB
+KV available:             ~78.0 GB
+```
+
+**Note vs TP=2:** TP=2 halved the weight cost to 8.5 GB/GPU, freeing ~8.5 GB more for KV.
+DP=2 loses that 8.5 GB/GPU but gains zero communication overhead. The tradeoff clearly
+favors DP=2 on PCIe for throughput workloads.
+
+### KV Cache Capacity (DP=2)
+
+| KV Dtype            | Per GPU     | Total (2 GPUs) | Concurrency at 4K | Concurrency at 32K |
+|---------------------|-------------|----------------|-------------------|--------------------|
+| BF16 (default)      | ~300K tok   | ~600K tok      | ~75x per GPU      | ~9x per GPU        |
+| FP8                 | ~600K tok   | ~1.2M tok      | ~150x per GPU     | ~19x per GPU       |
+| FusenCache FP8+int4 | ~500K tok   | ~1M tok        | ~125x per GPU     | ~16x per GPU       |
+
+FusenCache wins on capacity vs raw FP8 because its k4v4b64 format achieves 2.67×
+compression relative to BF16, and the per-GPU model-weight overhead (17 GB) reduces
+the BF16 baseline slightly compared to TP=2's sharded weights.
+
+### Throughput Projections (DP=2 Aggregate, 4K context, BF16 KV)
+
+DP=2 scales at exactly 2× single-GPU throughput because there is zero communication
+overhead. The only deviation is Max-Q TDP limiting the per-GPU ceiling.
+
+**Per-GPU (single server, 96 GB, 4K ctx):**
+
+| Concurrency | RTX 5090 ref | PRO 6000 projection | Notes                                |
+|-------------|-------------|---------------------|--------------------------------------|
+| C=1         | 89 tok/s    | ~90-95 tok/s        | Same decode speed (same SM count)    |
+| C=32        | 1,738 tok/s | ~1,700-1,900 tok/s  | Similar                              |
+| C=128       | 4,982 tok/s | ~5,000-5,500 tok/s  | PRO 6000: no KV pressure yet         |
+| C=256       | 6,615 tok/s | ~6,200-6,800 tok/s  | 5090 was KV-limited here; PRO 6000 is not |
+| C=512       | 6,173 tok/s | ~6,500-7,000 tok/s  | PRO 6000: 300K tokens → no KV pressure |
+| C=1024      | ~5,500 tok/s| ~6,000-6,500 tok/s  | PRO 6000 KV still comfortable at 4K ctx |
+
+**DP=2 aggregate (both GPUs, zero overhead):**
+
+| C per GPU | C total | DP=2 tok/s (conservative) | DP=2 tok/s (expected) | DP=2 tok/s (optimistic) |
+|-----------|---------|---------------------------|------------------------|--------------------------|
+| C=64      | C=128   | ~10,000                   | ~11,000                | ~12,000                 |
+| C=128     | C=256   | ~10,400                   | ~11,500                | ~13,000                 |
+| C=256     | C=512   | ~12,000                   | **~13,500**            | **~14,500**             |
+| C=512     | C=1024  | **~12,500**               | **~14,000**            | **~15,000**             |
+
+**Best estimate:** 12,000-14,000 tok/s aggregate at C=256/GPU (C=512 total).
+
+**Max-Q impact:** Both GPUs throttle at ~200 W vs 300 W for full PRO 6000. Expect
+~10-15% lower throughput than a full PRO 6000 pair, so reduce estimates accordingly:
+~10,000-12,000 tok/s is the realistic range.
+
+### DP=2 + Parallel Solver: Perfect Match
+
+The fusen_solver is designed for exactly this topology. With 8 agents split 4/4:
+
+```yaml
+# fusen_solver_dp2_config.yaml
+backends:
+  gpu0: {url: http://localhost:8000/v1, model: gemma4-nvfp4}
+  gpu1: {url: http://localhost:8001/v1, model: gemma4-nvfp4}
+strategy:
+  default_n: 8       # 4 agents per GPU
+  routing: round_robin
+  session_affinity: true   # long sessions stay on same GPU (prefix cache)
+```
+
+The solver provides:
+- Round-robin distribution (equal load)
+- Least-loaded fallback (if one GPU is slower due to Max-Q throttle)
+- Session affinity (coding assistant sessions stay on one GPU for prefix cache hits)
+- Health monitoring (removes a backend if /health fails 3×)
+- Per-backend throughput reporting every 5 minutes
+
+For coding workloads with long context, session affinity is important: consecutive
+turns in a conversation re-use the same prompt prefix, and keeping them on the same
+GPU allows vLLM's prefix cache to avoid re-computing the KV for repeated context.
+
+### Context Length Scaling (DP=2 Aggregate, C=128 per GPU)
+
+| Context | DP=2 projected tok/s | Bottleneck                              |
+|---------|---------------------|------------------------------------------|
+| 4K      | ~11,000             | MoE GEMM (compute-bound)                |
+| 8K      | ~8,000              | Attention growing (KV bandwidth)         |
+| 16K     | ~5,500              | KV bandwidth ~2× the 4K load            |
+| 32K     | ~3,500              | KV bandwidth ~4× the 4K load            |
+
+At 32K context, C=128 per GPU: KV load ≈ 128 × 32768 × head_dim × layers × 2 bytes
+≈ 17 GB per step per GPU. At 1792 GB/s bandwidth: ~9 ms just for KV reads.
+
+### When TP=2 Would Be Better
+
+TP=2 is only preferable when:
+1. A **single request** requires more KV than one GPU can hold (> ~78 GB of KV)
+2. This happens at context lengths > **~65K tokens** (78 GB / bytes-per-token)
+3. Or with many concurrent very long requests approaching the 78 GB KV limit
+
+At 32K context, the PRO 6000 holds ~9 concurrent requests per GPU before KV
+pressure. For most workloads (C=1 to C=256 at 32K), DP=2 is never KV-limited.
+
+**Summary:** TP=2 on NVLink would be competitive; TP=2 on PCIe is not. Use DP=2.
+
+### Day-One Benchmarking Plan (DP=2)
+
+#### Phase 1: Both servers up, quick sweep (20 minutes)
+
+```bash
+./serve_gemma4_dp2.sh 32768           # BF16, 32K ctx, ports 8000/8001
+python bench_dp2.py --quick            # C=[1,32,64,128,256,512] at 4K
+```
+
+#### Phase 2: Compare single GPU vs DP=2 combined (40 minutes)
+
+```bash
+python bench_dp2.py --compare-single --context-lengths 4096,32768
+```
+
+This runs GPU 0 alone, GPU 1 alone, then both together. Records actual scaling
+efficiency and fills `PRO6000_SINGLE_REFERENCE` for efficiency calculations.
+
+#### Phase 3: Context scaling (20 minutes)
+
+```bash
+python bench_dp2.py --context-sweep   # C=128/GPU, 4K→8K→16K→32K
+```
+
+#### Phase 4: FusenCache (if installed)
+
+```bash
+./serve_gemma4_dp2.sh 32768 fusen fusen     # both GPUs with FusenCache
+python bench_dp2.py --full --output bench_dp2_fusen.json
+```
+
+#### Phase 5: fusen_solver routing validation
+
+```bash
+# Start solver (after both vLLM servers are up)
+python -m fusen_solver --config fusen_solver_dp2_config.yaml --port 9000 &
+python bench_dp2.py --solver-port 9000 --quick
+```
+
+### DP=2 Summary Table
+
+| Metric                        | Conservative  | Expected       | Optimistic     |
+|-------------------------------|---------------|----------------|----------------|
+| Peak tok/s aggregate (4K BF16)| 10,000        | **12,000**     | 14,500         |
+| Peak C per GPU                | C=256         | **C=512**      | C=1024         |
+| DP=2 scaling efficiency       | 1.9x          | **~2.0x**      | 2.0x           |
+| C=1 latency (per GPU)         | 11 ms/tok     | **10 ms/tok**  | 9 ms/tok       |
+| KV tokens per GPU (BF16)      | 260K          | **300K**       | 340K           |
+| KV tokens per GPU (FusenCache)| 450K          | **500K**       | 560K           |
+| KV tokens total (FusenCache)  | 900K          | **1M**         | 1.1M           |
+| 32K ctx peak C per GPU        | 7x            | **9x**         | 12x            |
+| 32K ctx tok/s at C=9/GPU      | 2,800         | **3,500**      | 4,200          |
+
+**Single biggest win over RTX 5090 with DP=2:** Same as TP=2 — context and concurrency.
+96 GB per GPU lets each server handle 32K context at 9× concurrency independently,
+and 128K+ context becomes feasible. The aggregate benefit is **2× that of TP=2**
+because there is zero PCIe overhead tax on throughput.
