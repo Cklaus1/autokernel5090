@@ -269,3 +269,10 @@ RIGHT approach (what we learned):
 **Root cause:** KV cache is position-first layout. Each K/V position is strided by num_kv_heads×head_dim, preventing contiguous bulk reads. FA2 achieves 93% because BF16 layout matches its access pattern.
 **Fix would require:** Transpose KV to head-first layout — but this breaks vLLM's PagedAttention which assumes position-first. Fundamental architectural constraint.
 **Lesson:** Data layout > kernel optimization. The kernel is fine; the memory layout is wrong for FP8.
+
+## Discovery #38: FusenCache CUDA graph failure is metadata replay, not kernel
+**Expected:** C++ kernel would fix CUDA graph capture (Triton JIT was the problem)
+**Found:** C++ captures cleanly AND replays, but at 0.5 tok/s. Same as Triton. Both kernels work; the metadata builder doesn't propagate block_tables/seq_lens correctly during graph replay.
+**Also found:** C++ kernel crashes at C≥8 (buffer OOB), and eager mode is 15 tok/s at C=1 (much slower than the 6,685 batch measurement, which used a different config).
+**Root cause:** FusenKVMetadataBuilder.build_for_cudagraph_capture() — the pre-allocated tensors aren't being updated in-place during replay. This is a vLLM API integration bug.
+**Fix needed:** Debug the metadata builder's tensor lifecycle during CUDA graph capture vs replay.
