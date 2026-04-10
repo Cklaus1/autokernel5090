@@ -262,3 +262,10 @@ RIGHT approach (what we learned):
 **Opus plan found:** Target verification step (8.3ms for 26B MoE) is irreducible. Even with perfect acceptance rate, 8 tokens / 11ms = ~727 tok/s theoretical. Real-world with 65% acceptance: ~245-350 tok/s.
 **Key insight:** The verification bottleneck means diffusion drafting helps LESS for large MoE models than for small dense models. DFlash on Qwen3.5-9B achieved 94.6 tok/s from 50 tok/s (~2x), consistent with verification being the limiter.
 **Still worth it:** 245 tok/s is 2x current 120 tok/s single-user. And n-gram is free (160-320 tok/s for code).
+
+## Discovery #37: FP8 attention can't beat FA2 without KV cache layout change
+**Expected:** C++ FP8 with cp.async → 165μs (2x faster than FA2 323μs)
+**Found:** C++ FP8 = 368μs (40.7% BW), Triton FP8 = 408μs (36.7% BW), FA2 BF16 = 323μs (93% BW)
+**Root cause:** KV cache is position-first layout. Each K/V position is strided by num_kv_heads×head_dim, preventing contiguous bulk reads. FA2 achieves 93% because BF16 layout matches its access pattern.
+**Fix would require:** Transpose KV to head-first layout — but this breaks vLLM's PagedAttention which assumes position-first. Fundamental architectural constraint.
+**Lesson:** Data layout > kernel optimization. The kernel is fine; the memory layout is wrong for FP8.
