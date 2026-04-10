@@ -211,3 +211,9 @@ Current:                    6,685 tok/s (FusenCache eager)
 **Expected:** Diffusion requires diffusion-trained model
 **Found:** DFlash uses a diffusion-trained DRAFT model with a standard autoregressive TARGET. Already got 94.6 tok/s on Qwen3.5 in this repo. But no DFlash draft exists for Gemma4 26B MoE. EAGLE3 drafts exist for Gemma4 31B (dense) but not 26B MoE.
 **Options:** Train DFlash draft for Gemma4 26B (2-3 days GPU), or test if 31B EAGLE3 draft works with 26B MoE.
+
+## Discovery #34: No speculative decode draft exists for Gemma4 26B MoE
+**Expected:** EAGLE3 drafts for 31B might work with 26B
+**Found:** hidden_size mismatch (5376 vs 2816) — fatal. Both RedHatAI and thoughtworks EAGLE3 drafts are 31B-specific.
+**Options:** Train 26B-specific EAGLE3 draft (1-2 days GPU, ~200M params) or use n-gram (zero cost, ~1.2x).
+**Note:** Gemma4 9B also mismatches (hidden_size=3840). The 26B MoE has unique dimensions.
