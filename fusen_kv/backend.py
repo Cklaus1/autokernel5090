@@ -126,9 +126,16 @@ class FusenKVMetadataBuilder(AttentionMetadataBuilder[FusenKVMetadata]):
     def build_for_cudagraph_capture(
         self, common_attn_metadata,
     ) -> FusenKVMetadata:
-        """Build metadata for CUDA graph capture (max sizes, decode-only)."""
+        """Build metadata for CUDA graph capture (max sizes, decode-only).
+
+        During CUDA graph capture, we use the same pre-allocated tensors from
+        CommonAttentionMetadata. The key optimization is setting seq_lens to 1
+        (not max_model_len) so the decode kernel iterates over minimal KV blocks
+        during capture, keeping capture fast. At replay time, vLLM updates
+        seq_lens in-place with actual values.
+        """
         m = common_attn_metadata
-        return FusenKVMetadata(
+        metadata = FusenKVMetadata(
             block_table=m.block_table_tensor,
             seq_lens=m.seq_lens,
             slot_mapping=m.slot_mapping,
@@ -137,6 +144,10 @@ class FusenKVMetadataBuilder(AttentionMetadataBuilder[FusenKVMetadata]):
             num_reqs=m.num_reqs,
             max_query_len=1,  # decode-only
         )
+        # Set seq_lens to 1 for fast graph capture (avoids iterating over
+        # max_model_len KV blocks). vLLM fills actual values before replay.
+        metadata.seq_lens.fill_(1)
+        return metadata
 
     def build(
         self,

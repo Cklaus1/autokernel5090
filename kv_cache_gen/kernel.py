@@ -378,8 +378,12 @@ def _universal_decode_stage2(
             e_sum = e_sum * r + tl.exp(tlogic - n)
             e_max = n
 
+    # Guard against seq_len=0 (padding entries in CUDA graph batches):
+    # when no splits contributed, e_sum is 0 and acc/e_sum would be NaN.
+    # Output zero instead, which is safe for padded entries.
+    safe_sum = tl.where(e_sum > 0.0, e_sum, 1.0)
     tl.store(Out_ptr + bid * stride_out_b + hid * stride_out_h + d_offs,
-             acc / e_sum, mask=d_mask)
+             acc / safe_sum, mask=d_mask)
 
 
 # ===== Store kernel: quantize + pack + scatter into paged KV cache =====
