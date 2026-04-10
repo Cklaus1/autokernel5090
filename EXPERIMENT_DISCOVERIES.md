@@ -195,3 +195,9 @@ Current:                    6,685 tok/s (FusenCache eager)
 **Found:** Triton FP8 kernel at 35% BW utilization (430μs) vs FA2 at 93% BW (323μs). 1.3x SLOWER despite reading half the data.
 **Why:** Triton's per-element pointer arithmetic for paged KV access, no software pipelining (vs FA2's cp.async), small tile sizes.
 **Path forward:** Port to CUDA C++ with cp.async pipelining — same approach FA2 uses but for FP8 KV. Or fix FlashInfer's FP8 path for Gemma4's head dims.
+
+## Discovery #31: 2:4 sparsity helps prefill but not decode
+**Expected:** 2x MoE GEMM across the board
+**Found:** FP8 + 2:4 sparse: 3.1x at M=512 (prefill). But cuSPARSELt minimum M=32 — decode (M=1-8) fails. NVFP4 + 2:4 doesn't exist (no FP4 sparse variant in CUTLASS/cuSPARSELt).
+**Quality:** 37% error without fine-tuning. Needs SparseGPT/Wanda pruning + fine-tuning.
+**Use case:** Prefill acceleration only, after model fine-tuning. Not applicable to decode.
