@@ -256,3 +256,9 @@ RIGHT approach (what we learned):
 - Day 1: Train tiny draft (1 layer, 50M, 5K prompts) → measure acceptance rate
 - Decision gate: acceptance > 50% → proceed. < 30% → pivot to n-gram/dedicated model.
 - This 4-hour experiment prevents wasting 5-7 days on a failed approach.
+
+## Discovery #36: Lossless diffusion spec decode ceiling is ~300-350 tok/s (not 700)
+**My prediction:** ~700 tok/s with diffusion adapter
+**Opus plan found:** Target verification step (8.3ms for 26B MoE) is irreducible. Even with perfect acceptance rate, 8 tokens / 11ms = ~727 tok/s theoretical. Real-world with 65% acceptance: ~245-350 tok/s.
+**Key insight:** The verification bottleneck means diffusion drafting helps LESS for large MoE models than for small dense models. DFlash on Qwen3.5-9B achieved 94.6 tok/s from 50 tok/s (~2x), consistent with verification being the limiter.
+**Still worth it:** 245 tok/s is 2x current 120 tok/s single-user. And n-gram is free (160-320 tok/s for code).
