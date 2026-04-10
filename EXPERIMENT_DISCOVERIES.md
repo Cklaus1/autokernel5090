@@ -189,3 +189,9 @@ Current:                    6,685 tok/s (FusenCache eager)
 + PRO 6000 DP=2:           ~20,000 tok/s (2x hardware, aggregate)
 + MoA (Qwen fast brain):   +350 tok/s easy tasks on GPU 1
 ```
+
+## Discovery #30: FP8 Triton attention can't beat FA2 BF16
+**Expected:** FP8 native decode = half the reads = 2x faster than FA2 BF16
+**Found:** Triton FP8 kernel at 35% BW utilization (430μs) vs FA2 at 93% BW (323μs). 1.3x SLOWER despite reading half the data.
+**Why:** Triton's per-element pointer arithmetic for paged KV access, no software pipelining (vs FA2's cp.async), small tile sizes.
+**Path forward:** Port to CUDA C++ with cp.async pipelining — same approach FA2 uses but for FP8 KV. Or fix FlashInfer's FP8 path for Gemma4's head dims.
