@@ -17,7 +17,7 @@
 - Plugin: registered with vLLM, 25/25 tests pass, CUDA graph safe
 - MoE baseline: 8,969 tok/s at B=240 (grouped GEMM), Python-level streams 20x slower
 
-**Unvalidated:** Zero real model prompts generated. All quality numbers are on random tensors.
+**Unvalidated:** ~~Zero real model prompts generated. All quality numbers are on random tensors.~~ DONE — real model validated Apr 9.
 
 ---
 
@@ -25,11 +25,11 @@
 
 | # | Work Item | Impact | Effort | Status |
 |---|-----------|--------|--------|--------|
-| 1 | **Real model validation** — load Neural Ice, generate text, run perplexity | Validates or invalidates everything | Minutes | Blocked on vLLM build |
+| 1 | **Real model validation** — load Neural Ice, generate text, run perplexity | Validates or invalidates everything | Minutes | **DONE** ✓ Gemma4 26B NVFP4 serving, coherent output, PPL=701.4 on WikiText-2 |
 | 2 | **Fused Triton MoE kernel** — single kernel for expert dispatch | 2-5x on 85% of decode (35ms→7-17ms) | Hours | Spec + bench done, kernel TODO |
-| 3 | **NVFP4 native tensor cores** — `torch._scaled_mm` with FP4 on SM120 | 1.5-2x on every matmul | Hours | Requires SM120 FP4 path verification |
-| 4 | **vLLM end-to-end serving benchmark** — real tok/s under load | Ground truth for all claims | Minutes once build finishes | Blocked on build |
-| 5 | **CUDA graph full-model capture** — capture 30-layer decode as one graph | Eliminates ~750μs Python/launch overhead per step | Hours (vLLM integration) | Kernel verified graph-safe |
+| 3 | **NVFP4 native tensor cores** — `torch._scaled_mm` with FP4 on SM120 | 1.5-2x on every matmul | Hours | **ACTIVE** — FlashInfer+Cutlass using NVFP4 GEMM, need to verify FP4 tensor core utilization |
+| 4 | **vLLM end-to-end serving benchmark** — real tok/s under load | Ground truth for all claims | Minutes once build finishes | **DONE** ✓ 127 tok/s single, 2,071 tok/s peak at B=32, saturates at B=32 |
+| 5 | **CUDA graph full-model capture** — capture 30-layer decode as one graph | Eliminates ~750μs Python/launch overhead per step | Hours (vLLM integration) | **DONE** ✓ 7x speedup (18→127 tok/s), 86 graphs captured, 1 GiB graph memory |
 
 ### Why Tier 1
 
@@ -45,7 +45,7 @@ These items have direct evidence from our experiments. The MoE benchmark (Experi
 | 7 | **Per-layer KV spec** — k8v4 for sliding, k4v4 for global, natively in vLLM | +9% throughput (from mixed-spec Experiment 5) | Days (upstream PR) | Requires vLLM core changes to cache allocator |
 | 8 | **CUTLASS grouped GEMM** — replace cuBLAS for MoE expert dispatch | Potentially faster than Triton MoE for large batch | Days | CUTLASS 3.x SM120 support is new, may have edge cases |
 | 9 | **Multi-GPU tensor parallelism** — verify plugin with TP=2/4 on PRO 6000 | 2x capacity, ~1.8x throughput | Hours to verify, days to fix | Attention kernel is per-head (TP-safe), but store/decode need shard-aware block tables |
-| 10 | **FP8 kernel path** — cast-based dequant for fp8_e5m2/fp8_e4m3 KV cache | 2x compression with near-zero quality loss | Hours | Spec system ready, kernel just needs a `tl.float8e5m2` cast branch |
+| 10 | **FP8 kernel path** — cast-based dequant for fp8_e5m2/fp8_e4m3 KV cache | 2x compression with near-zero quality loss | Hours | **TESTED** ✓ vLLM FP8 KV works (87K tokens, 2x capacity) but 4x slower due to FlashInfer FP8 attention overhead on Gemma4 head dims. Custom FusenCache FP8 kernel may do better. |
 
 ### Why Tier 2
 
@@ -101,17 +101,19 @@ Each has an interesting hypothesis but no supporting data. The outlier-protected
 ## The Priority Order
 
 ```
-NOW:        #1  Real model validation
-            #4  Serving benchmark
-            
-NEXT:       #2  Fused Triton MoE kernel (the 85%)
-            #3  NVFP4 native tensor cores
+DONE:       #1  Real model validation ✓ (PPL=701.4, coherent output)
+            #4  Serving benchmark ✓ (2,071 tok/s peak at B=32)
+            #5  CUDA graph capture ✓ (7x speedup, 86 graphs)
+            #10 FP8 KV cache ✓ (2x capacity, but 4x slower — FlashInfer overhead)
 
-SOON:       #5  CUDA graph capture (vLLM integration)
-            #10 FP8 kernel path
-            #9  Multi-GPU for PRO 6000
+NOW:        #2  Fused Triton MoE kernel (the 85% — biggest remaining win)
+            #3  NVFP4 tensor core verification (confirm FP4 path is active)
 
-LATER:      #6-8   Expert prefetch, per-layer spec, CUTLASS grouped GEMM
+SOON:       #9  Multi-GPU for PRO 6000 (when hardware arrives)
+            #7  Per-layer KV spec (FusenCache k8v4/k4v4 — may beat FP8 KV)
+            #22 Model zoo validation (pipeline proven, repeat for other models)
+
+LATER:      #6,8   Expert prefetch, CUTLASS grouped GEMM
             #18-19 Upstream vLLM PRs
             #20-25 Infrastructure and ecosystem
 
@@ -127,15 +129,15 @@ NEVER:      #30    Full inference compiler (not our scope)
 
 Based on measured data from Experiments 1-15 and the MoE benchmark:
 
-### RTX 5090 (32GB)
+### RTX 5090 (32GB) — Updated with real benchmarks (Apr 9)
 
-| Configuration | B=128 tok/s | B=240 tok/s | Confidence |
-|--------------|------------|------------|------------|
-| Current (BF16 KV, cuBLAS MoE) | ~2,900 | OOM | Measured |
-| + k4v4 compression (today) | ~3,300 | ~4,500 | Measured |
-| + Fused MoE kernel (#2) | ~6,000-9,000 | ~8,000-12,000 | Estimated from launch overhead analysis |
-| + NVFP4 tensor cores (#3) | ~9,000-15,000 | ~12,000-20,000 | Estimated from 1.5-2x matmul speedup |
-| + CUDA graphs (#5) | +5-10% on top | +5-10% on top | Measured kernel-level, estimated system-level |
+| Configuration | B=1 tok/s | B=32 tok/s | Confidence |
+|--------------|----------|-----------|------------|
+| enforce_eager (no graphs) | 18 | (not tested) | **Measured** |
+| + CUDA graphs + torch.compile | 127 | 2,071 | **Measured** |
+| + FP8 KV cache | 31 | 479 | **Measured** (slower — FlashInfer overhead) |
+| + Fused MoE kernel (#2) | ~250-400 | ~4,000-8,000 | Estimated from launch overhead analysis |
+| + NVFP4 tensor cores verified (#3) | ~400-600 | ~6,000-12,000 | Estimated from 1.5-2x matmul speedup |
 
 ### RTX PRO 6000 (96GB)
 
@@ -151,15 +153,15 @@ Based on measured data from Experiments 1-15 and the MoE benchmark:
 ```
 Optimization                          Our Code    NVIDIA    Combined
 ─────────────────────────────────────────────────────────────────────
-KV compression (done)                 +55%        —         +55%
-Fused MoE kernel (#2)                +100-200%    —         +100-200%
-NVFP4 native tensor cores (#3)       (API call)  +50-100%  +50-100%
-CUDA graphs (#5)                     (config)    +5-10%    +5-10%
+CUDA graphs (#5)                     (config)    +600%     DONE ✓ (18→127 tok/s)
+FP8 KV cache (#10)                   (config)    2x cap    DONE ✓ (slower, capacity only)
+Fused MoE kernel (#2)                +100-200%    —         TODO (biggest remaining)
+NVFP4 tensor core verify (#3)       (verify)    +50-100%  TODO
 ─────────────────────────────────────────────────────────────────────
-Combined potential                                          3-6x
+Combined potential from remaining                           2-4x over current
 
-Current: ~4,500 tok/s (B=240, RTX 5090)
-Target:  ~12,000-20,000 tok/s (B=240, RTX 5090, all optimizations)
+Current: 2,071 tok/s peak (B=32, CUDA graphs, RTX 5090)
+Target:  ~4,000-8,000 tok/s (B=32, + fused MoE kernel)
 ```
 
 ---
