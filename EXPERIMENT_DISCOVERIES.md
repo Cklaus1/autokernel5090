@@ -126,3 +126,66 @@ Current:                    6,685 tok/s (FusenCache eager)
 + L2 persistence (5-10%):  ~15,100-15,800 tok/s
 + PRO 6000 TP=2:          ~25,000-30,000 tok/s
 ```
+
+## Discovery #22: Distillation is a trap for MoE models
+**Expected:** Dense 9B distilled from 26B → 3-5x faster
+**Found:** MoE 26B only activates 2.47B params/token. Dense 9B reads 3.6x MORE weight memory. Realistic speedup: ~2x, not 3-5x.
+**Better alternatives:** Gemma4 E2B (2B, already exists), Qwen3.5-9B (already cached), n-gram spec decode (zero cost).
+
+## Discovery #23: The bottleneck is KV READ bandwidth, not storage
+**Expected:** FusenCache's win is from storing less KV
+**Found:** FA2 is 93% bandwidth-optimal for BF16 KV. The real bottleneck is READING K/V during attention (63% of decode). FP8 native attention (half the read bytes) would give 1.44x total decode speedup — bigger than any other optimization.
+**Status:** FP8 native decode kernel being built by Opus agent.
+
+## Discovery #24: SM100 and SM120 are binary-incompatible
+**Expected:** "Blackwell" GPUs share binary compatibility
+**Found:** DeepGemm's 317 cubins are SM100-only (B100/B200 datacenter). SM120 (RTX 5090/PRO 6000) gets `CUDA_ERROR_NO_BINARY_FOR_GPU`. Different ISAs despite both being "Blackwell."
+**Implication:** Datacenter-targeted kernels won't work on consumer Blackwell. Must compile for SM120 specifically.
+
+## Discovery #25: Layer pruning fails catastrophically (-41% quality)
+**Expected:** Removing 3 early layers (low residual scalars) → minor quality impact
+**Found:** 41.3% overall quality drop. Coding -58%, reasoning -55%. Generation degenerates into repetition loops.
+**Lesson:** Low residual scalar ≠ low importance. Early layers are critical infrastructure for coherent generation.
+
+## Discovery #26: vLLM has native request priority scheduling
+**Expected:** Need to patch scheduler for SJF
+**Found:** `--scheduling-policy priority` exists. API accepts `priority: int` field. Scheduler sorts by `(priority, arrival_time)` and preempts lowest-priority on KV pressure.
+
+## Discovery #27: Block size 64 optimal for FusenCache (not 16)
+**Expected:** Default block_size=16 is fine
+**Found:** FusenCache k4v4b64 has quant block size=64. block_size=64 gives exact-fit (one quant group per page). block_size=32 spans two pages per group. Also: `max_num_batched_tokens=8192` (4x default) could give +50-150% throughput.
+
+## Discovery #28: Gemma4 E2B is overhead-bound, not bandwidth-bound
+**Expected:** Small model → bandwidth-limited (like 26B)
+**Found:** At 1.3-5.3GB weights, read time (0.85-3.5ms) is smaller than vLLM's 5ms Python overhead. Single-user throughput is overhead-limited. SGLang (~2ms overhead) would be 2x faster for this model size.
+**Lesson:** Different model sizes need different serving frameworks.
+
+## Discovery #29: Mixture of Agents — Qwen3.5-9B beats E2B for coding fast-brain
+**Expected:** E2B (same family) would be best fast model
+**Found:** E2B has higher cascade rate on code tasks (needs to fall back to 26B more often), making it net slower end-to-end. Qwen3.5-9B has better code quality at similar speed.
+
+---
+
+## Updated Discoveries That Changed Our Plan (Session 2)
+
+| Discovery | Original Plan | Revised Plan |
+|---|---|---|
+| #22 (distillation trap) | Distill 26B → 9B | Use existing models (E2B, Qwen3.5) |
+| #23 (KV read bandwidth) | Focus on KV storage | Build FP8 native attention kernel |
+| #24 (SM100≠SM120) | Enable DeepGemm | Can't — binary incompatible |
+| #25 (layer pruning fails) | Remove 3 layers → 10% | Model is NOT prunable |
+| #26 (native priorities) | Patch scheduler | Just use `--scheduling-policy priority` |
+| #27 (block_size 64) | Default block_size=16 | block_size=64 for FusenCache |
+| #28 (E2B overhead-bound) | Run E2B on vLLM | Run E2B on SGLang instead |
+| #29 (Qwen > E2B for code) | E2B as fast brain | Qwen3.5-9B as fast brain |
+
+## Updated Projected Impact Stack
+
+```
+Current:                    6,685 tok/s (FusenCache eager)
++ FP8 native attention:    ~9,600 tok/s (1.44x from halved KV reads)
++ block_size=64 + tuning:  ~10,500 tok/s (+50% from scheduler tuning)
++ C++ FusenCache decode:    ~11,500 tok/s (CUDA graphs on non-attention ops)
++ PRO 6000 DP=2:           ~20,000 tok/s (2x hardware, aggregate)
++ MoA (Qwen fast brain):   +350 tok/s easy tasks on GPU 1
+```
