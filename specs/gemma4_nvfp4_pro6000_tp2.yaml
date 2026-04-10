@@ -3,39 +3,101 @@ model:
   path: /models/gemma-4-26B-A4B-it-NVFP4-modelopt
   architecture: gemma4_moe
   quantization: modelopt
+  weights_gb: 17
+  huggingface: cklaus/gemma-4-26B-A4B-it-NVFP4
+
 hardware:
-  gpu: pro-6000
+  gpu: rtx-pro-6000
+  gpu_variant: blackwell-sm120
   memory_gb: 96
   num_gpus: 2
+  total_memory_gb: 192
   tensor_parallel: 2
+  interconnect: nvlink-or-pcie   # NVLink preferred; PCIe adds ~10% NCCL overhead
+  tdp_per_gpu_w: 300
+  hbm_bandwidth_gbs: 1792       # same per-GPU as RTX 5090 (verify on actual hardware)
+  sm_count: 170                  # same SM count as RTX 5090 (verify)
+  l2_cache_mb: 96               # per GPU
+
 serving:
   mode: throughput
-  inductor: false
-  cudagraph_mode: full
-  max_model_len: 16384
-  gpu_memory_utilization: 0.92
+  inductor: false                # CRITICAL: disable for 2x batch throughput
+  cudagraph_mode: full           # capture full decode graph
+  max_model_len: 32768           # 32K context — trivial with 192GB
+  gpu_memory_utilization: 0.92   # 8% headroom for CUDA graphs + NCCL buffers
   enforce_eager: false
-  max_num_seqs: 512
+  max_num_seqs: 1024             # was 256 on single-GPU; 192GB allows 4x more
   dtype: auto
+  tensor_parallel_size: 2
+  disable_log_requests: true
+  # Launch: serve_gemma4_tp2.sh
+  # vLLM flags: -cc.mode none -cc.cudagraph_mode full --tensor-parallel-size 2
+
 kv_cache:
-  dtype: fp8
+  dtype: bf16                   # default: best throughput
+  bf16_capacity_tokens: 480000  # ~480K tokens (projected: 192GB * 0.92 - 17GB weights)
+  fp8_capacity_tokens: 960000   # FP8 doubles capacity, same speed on Blackwell (verify)
+  fusen_capacity_tokens: 1280000  # FusenCache FP8+int4: 2.67x compression
+  fusen_effective_gb: 768        # 192GB * 4x effective compression
   per_layer: null
+
 kernels:
-  fused_norm_quant: true
+  fused_norm_quant: true         # available on Blackwell via vLLM's Blackwell path
   fused_add_residual: true
-  shuffle_quant_fusion: true
+  shuffle_quant_fusion: true     # Gemma4 MoE shuffle+quant fusion
+
 docker:
   image: vllm-built
   port: 8000
-  extra_args: []
-  vllm_extra_args: []
+  shm_size: 16g                  # required for NCCL inter-GPU communication
+  extra_args:
+    - --gpus=all
+    - --shm-size=16g
+  vllm_extra_args:
+    - --tensor-parallel-size=2
+    - --max-model-len=32768
+    - --gpu-memory-utilization=0.92
+    - --max-num-seqs=1024
+    - -cc.mode=none
+    - -cc.cudagraph_mode=full
+
 performance:
-  kv_tokens: 0
-  profiled: ''
-description: 'Projected PRO 6000 TP=2: 192GB VRAM, FP8 KV, 16K context'
+  # All numbers below are PROJECTIONS based on RTX 5090 single-GPU data.
+  # Actual measurements to be filled in on day-one benchmarking.
+  projected_peak_tok_s: 11000    # ~1.7x single GPU (6,615) — typical TP=2 scaling
+  projected_peak_concurrency: 512
+  projected_scaling_efficiency: 0.85  # 85% of ideal 2x (accounts for NCCL overhead)
+  tp1_reference_peak_tok_s: 6615      # measured on RTX 5090
+
+  # KV budget analysis (per GPU):
+  #   Total VRAM per GPU: 96 GB
+  #   Model weights:       8.5 GB (17 GB total / 2 GPUs with TP sharding)
+  #   CUDA graphs:         ~1 GB
+  #   KV cache (BF16):    ~85 GB available → ~480K tokens at 32K context
+  #   KV cache (FusenCache): effectively 768 GB equivalent
+
+  # Context scaling projections at C=128:
+  ctx_4k_tok_s: 8000
+  ctx_8k_tok_s: 6500
+  ctx_16k_tok_s: 4500
+  ctx_32k_tok_s: 3000
+
+  kv_tokens: 0           # to be measured on day one
+  profiled: ''           # to be filled in
+
+description: 'RTX PRO 6000 TP=2: 192GB VRAM, 32K context, projected 10-12K tok/s'
+
 notes:
-- PRO 6000 has 96GB per GPU, 192GB total with TP=2
-- 'FP8 KV is safe bet: 2x capacity, well-supported'
-- 16K context feasible with 192GB VRAM
-- Fused kernels expected available for Blackwell
-- Performance numbers TBD -- not yet benchmarked
+  - 'PRO 6000 has 96GB per GPU, 192GB total with TP=2 -- 6x the RTX 5090 capacity'
+  - 'BF16 KV recommended: no throughput penalty, 480K token capacity already huge'
+  - 'FP8 KV doubles capacity with no throughput cost on Blackwell (vs 4x slower on 5090 FlashInfer path -- verify)'
+  - 'FusenCache gives effective 768GB KV capacity with 2.67x compression (FP8+int4)'
+  - '32K context is the default -- 192GB makes 64K+ feasible if needed'
+  - 'TP=2 scaling efficiency: 1.6-1.8x (not 2x) due to NCCL AllReduce per layer'
+  - 'NCCL overhead is larger at small batch (C=1: ~15ms/step) and amortizes at C=128+'
+  - 'max_num_seqs=1024 vs 256 on single GPU -- 4x more KV budget allows this'
+  - 'Disable inductor is CRITICAL: same lesson from 5090, 2x throughput at batch scale'
+  - 'PRO 6000 vs PRO 6000 Max-Q: Max-Q has lower TDP (~200W vs ~300W); throughput may differ'
+  - 'NVLink preferred for inter-GPU; PCIe adds ~10% AllReduce overhead'
+  - 'Benchmark with: bench_tp2.py --quick (first pass) then bench_tp2.py --full'
+  - 'Performance numbers TBD -- not yet benchmarked on actual hardware'
