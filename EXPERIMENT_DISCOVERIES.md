@@ -358,3 +358,11 @@ RIGHT approach (what we learned):
 **Retried:** n=2 (-49%), n=1 (-49%). Repetitive JSON/HTML = same as novel code.
 **Root cause:** CUDA graph full mode is optimized for standard decode shapes. Speculative decode introduces variable batch sizes that break graph reuse. Overhead is structural, not proportional to n.
 **FINAL VERDICT:** N-gram speculative decoding is completely dead for NVFP4+CUDA graphs. The 123 tok/s baseline is optimal for single-user AR decode.
+
+## Discovery #43: FusenCache CUDA graph fix — limit capture sizes (42x speedup)
+**Problem:** FusenCache + CUDA graphs = 2.9 tok/s (should be ~120)
+**Root cause:** 35 CUDA graphs up to batch=512. Each graph allocates persistent Triton decode buffers per layer. 30 layers × 35 sizes = 119 GiB estimated graph pool on 32GB GPU → catastrophic memory pressure.
+**Fix:** Limit to 7 graphs (max batch=32): `-cc.cudagraph_capture_sizes '[1,2,4,8,16,24,32]'`
+**Also:** Remove custom build_for_cudagraph_capture() — base class default is correct (same as FlashAttention).
+**Result:** 122.7 tok/s — matches native vLLM FlashAttention while using 4x less KV memory.
+**Lesson:** The "metadata builder tensor lifecycle" hypothesis was WRONG. The real issue was memory exhaustion from too many graph captures. Simple config fix, not code fix.
