@@ -366,3 +366,12 @@ RIGHT approach (what we learned):
 **Also:** Remove custom build_for_cudagraph_capture() — base class default is correct (same as FlashAttention).
 **Result:** 122.7 tok/s — matches native vLLM FlashAttention while using 4x less KV memory.
 **Lesson:** The "metadata builder tensor lifecycle" hypothesis was WRONG. The real issue was memory exhaustion from too many graph captures. Simple config fix, not code fix.
+
+## Discovery #44: FusenCache + CUDA graphs — sweet spot is max_batch=32
+**Tested:** 7 graph sizes (max=32): 113 tok/s C=1, 471 tok/s C=16, crashes at C=32+
+**Tested:** 11 graph sizes (max=128): 5.4 tok/s — graph memory explosion returns
+**Sweet spot:** 7 sizes [1,2,4,8,16,24,32], 0.41 GiB graphs, 174K KV tokens
+**Limitation:** Batch sizes > max_graph_size fall back to eager → Triton JIT → crash/slow
+**Implication:** FusenCache + CUDA graphs is best for single-user/small-batch (≤16 concurrent).
+For high batch (C=128+): FusenCache eager (6,685 tok/s) is still the best config.
+For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
