@@ -28,3 +28,4 @@ report.md
 
 # Workspace (runtime artifacts)
 workspace/
+cache/fused_kernel/*.so

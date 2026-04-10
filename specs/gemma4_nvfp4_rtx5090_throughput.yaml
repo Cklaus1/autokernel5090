@@ -1,0 +1,42 @@
+model:
+  name: gemma-4-26B-A4B-it-NVFP4
+  path: /models/gemma-4-26B-A4B-it-NVFP4-modelopt
+  architecture: gemma4_moe
+  quantization: modelopt
+hardware:
+  gpu: rtx-5090
+  memory_gb: 32
+  num_gpus: 1
+  tensor_parallel: 1
+serving:
+  mode: throughput
+  inductor: false
+  cudagraph_mode: full
+  max_model_len: 4096
+  gpu_memory_utilization: 0.9
+  enforce_eager: false
+  max_num_seqs: 256
+  dtype: auto
+kv_cache:
+  dtype: auto
+  per_layer: null
+kernels:
+  fused_norm_quant: false
+  fused_add_residual: true
+  shuffle_quant_fusion: false
+docker:
+  image: vllm-built
+  port: 8000
+  extra_args: []
+  vllm_extra_args: []
+performance:
+  C1: 89
+  C32: 1738
+  C256: 6615
+  kv_tokens: 43760
+  profiled: '2026-04-10'
+description: 'Best throughput: no inductor, full CUDA graphs, BF16 KV cache'
+notes:
+- Inductor OFF gives ~2x throughput for batched serving
+- CUDA graphs reduce kernel launch overhead significantly
+- BF16 KV is default; FP8 saves memory but adds conversion overhead

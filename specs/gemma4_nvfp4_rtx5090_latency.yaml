@@ -1,0 +1,41 @@
+model:
+  name: gemma-4-26B-A4B-it-NVFP4
+  path: /models/gemma-4-26B-A4B-it-NVFP4-modelopt
+  architecture: gemma4_moe
+  quantization: modelopt
+hardware:
+  gpu: rtx-5090
+  memory_gb: 32
+  num_gpus: 1
+  tensor_parallel: 1
+serving:
+  mode: latency
+  inductor: true
+  cudagraph_mode: full
+  max_model_len: 4096
+  gpu_memory_utilization: 0.9
+  enforce_eager: false
+  max_num_seqs: 32
+  dtype: auto
+kv_cache:
+  dtype: auto
+  per_layer: null
+kernels:
+  fused_norm_quant: false
+  fused_add_residual: true
+  shuffle_quant_fusion: false
+docker:
+  image: vllm-built
+  port: 8000
+  extra_args: []
+  vllm_extra_args: []
+performance:
+  C1: 45
+  C4: 170
+  kv_tokens: 43760
+  profiled: '2026-04-10'
+description: 'Best latency: inductor ON for torch.compile optimizations'
+notes:
+- Inductor ON improves single-request latency ~30%
+- Lower max_num_seqs to reduce scheduling overhead
+- Throughput is ~50% of no-inductor config for large batches

@@ -1,0 +1,45 @@
+model:
+  name: gemma-4-26B-A4B-it-NVFP4
+  path: /models/gemma-4-26B-A4B-it-NVFP4-modelopt
+  architecture: gemma4_moe
+  quantization: modelopt
+hardware:
+  gpu: rtx-5090
+  memory_gb: 32
+  num_gpus: 1
+  tensor_parallel: 1
+serving:
+  mode: throughput
+  inductor: false
+  cudagraph_mode: full
+  max_model_len: 4096
+  gpu_memory_utilization: 0.9
+  enforce_eager: false
+  max_num_seqs: 512
+  dtype: auto
+kv_cache:
+  dtype: k4v4b64
+  per_layer:
+    sliding: k4v4b64
+    global: k8v4b16
+kernels:
+  fused_norm_quant: false
+  fused_add_residual: true
+  shuffle_quant_fusion: false
+docker:
+  image: vllm-fusencache
+  port: 8000
+  extra_args: []
+  vllm_extra_args: []
+performance:
+  C1: 85
+  C32: 1650
+  C512: 9800
+  kv_tokens: 175040
+  profiled: '2026-04-10'
+description: 'FusenCache: 4x KV capacity via k4v4b64 quantization (175K tokens)'
+notes:
+- FusenCache k4v4b64 gives ~4x KV compression vs BF16
+- 'Per-layer: sliding attention uses aggressive k4v4, global uses k8v4b16'
+- 'Requires FusenCache-patched vLLM build (docker image: vllm-fusencache)'
+- Higher max_num_seqs to exploit larger KV capacity
