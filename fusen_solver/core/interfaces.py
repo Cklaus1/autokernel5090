@@ -29,6 +29,8 @@ class Problem:
     tests: list[str] = field(default_factory=list)  # test commands to validate
     language: str = "auto"
     priority: str = "quality"  # "quality", "speed", "balanced"
+    solve_mode: str = "auto"  # "isolated", "collaborative", "auto"
+    max_rounds: int = 3  # for collaborative mode
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

@@ -53,6 +53,7 @@ SAMPLE_PROBLEM = Problem(
     description="Fix the off-by-one error in pagination",
     context={"app.py": "def paginate(items, page, size):\n    start = page * size\n    return items[start:start+size]\n"},
     problem_type="bug_fix",
+    solve_mode="isolated",  # existing tests expect isolated (single-round) behavior
 )
 
 
@@ -344,6 +345,348 @@ class TestFusenSolver:
 
             stats = learning.get_stats()
             assert "bug_fix" in stats
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Collaborative solving tests
+# ---------------------------------------------------------------------------
+
+
+class TestCollaborativeSolving:
+    @pytest.mark.asyncio
+    async def test_collaborative_round_execution(self):
+        """Collaborative mode runs multiple rounds with role-based agents."""
+        backend = MockBackend(
+            response="```python\ndef fix():\n    return 42\n```\n\nAnalysis complete."
+        )
+        solver = FusenSolver(backend=backend, default_n=2, auto_n=False)
+
+        problem = Problem(
+            description="Fix the off-by-one error",
+            context={"app.py": "def f(): pass"},
+            problem_type="bug_fix",
+            solve_mode="collaborative",
+            max_rounds=3,
+        )
+
+        result = await solver.solve(problem)
+
+        assert result.mode == "collaborative"
+        assert len(result.rounds) > 0
+        assert len(result.rounds) <= 3
+        assert result.num_agents > 0
+        assert result.total_time_s > 0
+
+    @pytest.mark.asyncio
+    async def test_collaborative_context_accumulation(self):
+        """Each round's synthesis is available to subsequent rounds."""
+        call_count = 0
+        prompts_seen: list[str] = []
+
+        class ContextTrackingBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+                nonlocal call_count
+                call_count += 1
+                # Capture the user message content to check context passing
+                for msg in messages:
+                    if msg["role"] == "user":
+                        prompts_seen.append(msg["content"])
+                return (
+                    "Here is my analysis.\n\n"
+                    "```json\n"
+                    '{"has_solution": false, "tests_pass": false}\n'
+                    "```"
+                )
+
+        backend = ContextTrackingBackend()
+        solver = FusenSolver(backend=backend, default_n=2, auto_n=False)
+
+        problem = Problem(
+            description="Fix the bug",
+            context={"app.py": "x = 1"},
+            problem_type="bug_fix",
+            solve_mode="collaborative",
+            max_rounds=2,
+        )
+
+        result = await solver.solve(problem)
+
+        # Should have run multiple rounds
+        assert len(result.rounds) == 2
+        # Round 2 agents should see Round 1 context in their prompts
+        # (Round 2 has 2 roles + 1 synthesis call = at least some prompts with Round 1 info)
+        round2_prompts = [p for p in prompts_seen if "Round 1" in p]
+        assert len(round2_prompts) > 0, "Round 2 agents should receive Round 1 context"
+
+    @pytest.mark.asyncio
+    async def test_collaborative_early_exit(self):
+        """Collaborative mode stops early when synthesis reports tests pass."""
+
+        class EarlyExitBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+                # Always report solution found with tests passing
+                return (
+                    "Solution found!\n\n"
+                    "```python\ndef fix(): return 42\n```\n\n"
+                    "```json\n"
+                    '{"has_solution": true, "tests_pass": true}\n'
+                    "```"
+                )
+
+        backend = EarlyExitBackend()
+        solver = FusenSolver(backend=backend, default_n=2, auto_n=False)
+
+        problem = Problem(
+            description="Fix the bug",
+            context={"app.py": "x = 1"},
+            problem_type="bug_fix",
+            solve_mode="collaborative",
+            max_rounds=3,
+        )
+
+        result = await solver.solve(problem)
+
+        assert result.mode == "collaborative"
+        # Should exit after round 1 since synthesis says tests pass
+        assert len(result.rounds) == 1
+
+    @pytest.mark.asyncio
+    async def test_auto_mode_insufficient_data(self):
+        """Auto mode uses heuristic when insufficient history data."""
+        backend = MockBackend(
+            response="```python\ndef fix(): return 42\n```\n\n"
+            "```json\n"
+            '{"has_solution": false, "tests_pass": false}\n'
+            "```"
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            db_path = f.name
+
+        try:
+            learning = LearningEngine(db_path=db_path, min_data=10)
+            solver = FusenSolver(backend=backend, learning_engine=learning, auto_n=False, default_n=2)
+
+            # bug_fix should default to collaborative with insufficient data
+            problem = Problem(
+                description="Fix a crash",
+                context={"app.py": "x = 1"},
+                problem_type="bug_fix",
+                solve_mode="auto",
+            )
+            result = await solver.solve(problem)
+            assert result.mode == "collaborative"
+
+            # feature should default to isolated with insufficient data
+            problem2 = Problem(
+                description="Add a button",
+                context={"app.py": "x = 1"},
+                problem_type="feature",
+                solve_mode="auto",
+            )
+            result2 = await solver.solve(problem2)
+            assert result2.mode == "isolated"
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_auto_mode_with_enough_data(self):
+        """Auto mode uses acceptance rates when enough history exists."""
+        backend = MockBackend(response="```python\ndef fix(): return 42\n```")
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            db_path = f.name
+
+        try:
+            learning = LearningEngine(db_path=db_path, min_data=3)
+
+            # Record enough history: collaborative is better for "optimize"
+            for _ in range(5):
+                learning.record_mode("optimize", "collaborative", accepted=True)
+                learning.record_mode("optimize", "isolated", accepted=False)
+
+            solver = FusenSolver(
+                backend=backend,
+                learning_engine=learning,
+                auto_n=False,
+                default_n=2,
+            )
+
+            problem = Problem(
+                description="Optimize the loop",
+                context={"app.py": "x = 1"},
+                problem_type="optimize",
+                solve_mode="auto",
+            )
+
+            # Should pick collaborative since it has higher acceptance rate
+            mode = learning.suggest_mode(problem)
+            assert mode == "collaborative"
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_role_assignment_per_round(self):
+        """Each round uses the correct set of roles from COLLABORATIVE_ROLES."""
+        from fusen_solver.strategies.presets import COLLABORATIVE_ROLES
+
+        roles_used: list[list[str]] = []
+
+        class RoleTrackingBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+                # Extract role name from the system message
+                system_msg = messages[0]["content"] if messages else ""
+                return (
+                    "Output from agent.\n\n"
+                    "```json\n"
+                    '{"has_solution": false, "tests_pass": false}\n'
+                    "```"
+                )
+
+        backend = RoleTrackingBackend()
+        solver = FusenSolver(backend=backend, default_n=2, auto_n=False)
+
+        problem = Problem(
+            description="Fix the bug",
+            context={"app.py": "x = 1"},
+            problem_type="bug_fix",
+            solve_mode="collaborative",
+            max_rounds=3,
+        )
+
+        result = await solver.solve(problem)
+
+        # Verify the rounds used the expected number of roles
+        assert len(result.rounds) == 3
+        assert len(result.rounds[0]["outputs"]) == len(COLLABORATIVE_ROLES["round_1"])
+        assert len(result.rounds[1]["outputs"]) == len(COLLABORATIVE_ROLES["round_2"])
+        assert len(result.rounds[2]["outputs"]) == len(COLLABORATIVE_ROLES["round_3"])
+
+        # Verify role names match
+        round1_roles = [o["role"] for o in result.rounds[0]["outputs"]]
+        expected_round1 = [r.name for r in COLLABORATIVE_ROLES["round_1"]]
+        assert round1_roles == expected_round1
+
+    @pytest.mark.asyncio
+    async def test_isolated_mode_unchanged(self):
+        """Explicit isolated mode still works exactly as before."""
+        backend = MockBackend(response="```python\ndef fix():\n    return 42\n```\n\nFixed.")
+        solver = FusenSolver(backend=backend, default_n=2, auto_n=False)
+
+        problem = Problem(
+            description="Fix the off-by-one error",
+            context={"app.py": "def f(): pass"},
+            problem_type="bug_fix",
+            solve_mode="isolated",
+        )
+
+        result = await solver.solve(problem)
+
+        assert result.mode == "isolated"
+        assert result.rounds == []
+        assert len(result.solutions) > 0
+        assert result.best is not None
+
+    def test_problem_solve_mode_defaults(self):
+        """Problem defaults to auto solve_mode and 3 max_rounds."""
+        p = Problem(description="test")
+        assert p.solve_mode == "auto"
+        assert p.max_rounds == 3
+
+
+class TestLearningEngineMode:
+    def test_record_mode(self):
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            db_path = f.name
+
+        try:
+            engine = LearningEngine(db_path=db_path, min_data=2)
+            engine.record_mode("bug_fix", "collaborative", accepted=True)
+            engine.record_mode("bug_fix", "isolated", accepted=False)
+
+            assert len(engine._mode_history) == 2
+            assert engine._mode_history[0]["type"] == "bug_fix"
+            assert engine._mode_history[0]["mode"] == "collaborative"
+            assert engine._mode_history[0]["accepted"] is True
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+    def test_suggest_mode_heuristic(self):
+        """With insufficient data, uses problem-type heuristic."""
+        engine = LearningEngine(db_path="/tmp/fusen_test_nonexistent.json", min_data=10)
+
+        # Complex types default to collaborative
+        assert engine.suggest_mode(Problem(description="fix crash", problem_type="bug_fix")) == "collaborative"
+        assert engine.suggest_mode(Problem(description="redesign", problem_type="refactor")) == "collaborative"
+        assert engine.suggest_mode(Problem(description="new arch", problem_type="architecture")) == "collaborative"
+
+        # Simple types default to isolated
+        assert engine.suggest_mode(Problem(description="add feature", problem_type="feature")) == "isolated"
+        assert engine.suggest_mode(Problem(description="optimize", problem_type="optimize")) == "isolated"
+
+    def test_suggest_mode_data_driven(self):
+        """With enough data, uses acceptance rates."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            db_path = f.name
+
+        try:
+            engine = LearningEngine(db_path=db_path, min_data=3)
+
+            # Record: isolated is better for feature
+            for _ in range(5):
+                engine.record_mode("feature", "isolated", accepted=True)
+                engine.record_mode("feature", "collaborative", accepted=False)
+
+            assert engine.suggest_mode(
+                Problem(description="add button", problem_type="feature")
+            ) == "isolated"
+
+            # Record: collaborative is better for bug_fix
+            for _ in range(5):
+                engine.record_mode("bug_fix", "collaborative", accepted=True)
+                engine.record_mode("bug_fix", "isolated", accepted=False)
+
+            assert engine.suggest_mode(
+                Problem(description="fix crash", problem_type="bug_fix")
+            ) == "collaborative"
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+    def test_mode_history_persistence(self):
+        """Mode history persists across engine instances."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            db_path = f.name
+
+        try:
+            engine1 = LearningEngine(db_path=db_path)
+            engine1.record_mode("bug_fix", "collaborative", accepted=True)
+            engine1.record_mode("bug_fix", "isolated", accepted=False)
+
+            # Load in new instance
+            engine2 = LearningEngine(db_path=db_path)
+            assert len(engine2._mode_history) == 2
+            assert engine2._mode_history[0]["mode"] == "collaborative"
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+    def test_mode_stats_in_get_stats(self):
+        """get_stats includes mode statistics when mode history exists."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            db_path = f.name
+
+        try:
+            engine = LearningEngine(db_path=db_path)
+            engine.record_mode("bug_fix", "collaborative", accepted=True)
+            engine.record_mode("bug_fix", "collaborative", accepted=True)
+            engine.record_mode("bug_fix", "isolated", accepted=False)
+
+            stats = engine.get_stats()
+            assert "_mode_stats" in stats
+            assert "bug_fix" in stats["_mode_stats"]
+            assert stats["_mode_stats"]["bug_fix"]["collaborative"]["acceptance_rate"] == 1.0
+            assert stats["_mode_stats"]["bug_fix"]["isolated"]["acceptance_rate"] == 0.0
         finally:
             Path(db_path).unlink(missing_ok=True)
 

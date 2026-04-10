@@ -26,6 +26,7 @@ class Config:
     strategy: dict[str, Any] = field(default_factory=dict)
     learning: dict[str, Any] = field(default_factory=dict)
     scoring: dict[str, Any] = field(default_factory=dict)
+    solving: dict[str, Any] = field(default_factory=dict)
 
 
 def default_config() -> Config:
@@ -55,6 +56,18 @@ def default_config() -> Config:
             "diff_weight": 0.15,
             "syntax_weight": 0.1,
             "confidence_weight": 0.05,
+        },
+        solving={
+            "default_mode": "auto",
+            "collaborative": {
+                "max_rounds": 3,
+                "roles_per_round": [3, 2, 2],
+                "early_exit": True,
+                "synthesis_backend": "strong",
+            },
+            "learning": {
+                "min_data_for_mode_selection": 10,
+            },
         },
     )
 
@@ -94,6 +107,8 @@ def load_config(path: str | None = None) -> Config:
                     config.learning = data["learning"]
                 if "scoring" in data:
                     config.scoring = data["scoring"]
+                if "solving" in data:
+                    config.solving = data["solving"]
 
             logger.info("Loaded config from %s", config_path)
         except Exception as e:

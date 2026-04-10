@@ -109,8 +109,10 @@ def _load_codebase(path: str | Path, max_chars: int = 200000) -> dict[str, str]:
 
 def _print_result(result: SolveResult) -> None:
     """Pretty-print solve results."""
+    mode_str = f" ({result.mode})" if result.mode != "isolated" else ""
+    rounds_str = f", {len(result.rounds)} rounds" if result.rounds else ""
     print(f"\n{BOLD}{'=' * 70}")
-    print(f"  Results: {result.num_agents} agents, {result.total_time_s:.1f}s total")
+    print(f"  Results: {result.num_agents} agents{mode_str}{rounds_str}, {result.total_time_s:.1f}s total")
     print(f"{'=' * 70}{RESET}\n")
 
     if result.solutions:
@@ -160,11 +162,16 @@ async def cmd_solve(args: argparse.Namespace) -> None:
         description=problem_text,
         context=context,
         problem_type=args.type or "auto",
+        solve_mode=args.mode or "auto",
+        max_rounds=args.rounds,
     )
 
-    print(f"\n{BOLD}Fusen Solver: {args.agents} agents{RESET}")
+    mode_label = f", mode={problem.solve_mode}" if problem.solve_mode != "auto" else ""
+    print(f"\n{BOLD}Fusen Solver: {args.agents} agents{mode_label}{RESET}")
     print(f"  Problem: {problem_text[:200]}")
     print(f"  Codebase: {args.codebase} ({len(context)} files)")
+    if problem.solve_mode == "collaborative":
+        print(f"  Rounds: {problem.max_rounds}")
     print()
 
     result = await solver.solve(problem, merge=args.merge)
@@ -263,6 +270,18 @@ def main() -> None:
     p_solve.add_argument("--type", help="Problem type (bug_fix, feature, refactor, ...)")
     p_solve.add_argument("--merge", action="store_true", help="Merge top solutions")
     p_solve.add_argument("--no-auto-n", action="store_true", help="Disable auto agent count")
+    p_solve.add_argument(
+        "--mode",
+        choices=["isolated", "collaborative", "auto"],
+        default="auto",
+        help="Solve mode: isolated (single round), collaborative (multi-round), auto (data-driven)",
+    )
+    p_solve.add_argument(
+        "--rounds",
+        type=int,
+        default=3,
+        help="Max rounds for collaborative mode (default: 3)",
+    )
     p_solve.add_argument("--output", help="Save results to JSON file")
 
     # interactive

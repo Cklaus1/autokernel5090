@@ -6,7 +6,61 @@ a problem. Presets group strategies by problem type.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 from fusen_solver.core.interfaces import Strategy
+
+
+# ---------------------------------------------------------------------------
+# Collaborative roles for multi-round solving
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AgentRole:
+    """Specialized role for collaborative solving."""
+
+    name: str  # "analyst", "coder", "tester", "reviewer"
+    prompt_template: str
+    receives_context: bool = True  # sees previous round results
+
+
+COLLABORATIVE_ROLES: dict[str, list[AgentRole]] = {
+    "round_1": [
+        AgentRole(
+            "analyst",
+            "Analyze the root cause of this problem. Be specific about WHERE and WHY.",
+        ),
+        AgentRole(
+            "researcher",
+            "Research the codebase context. What patterns are used? What constraints exist?",
+        ),
+        AgentRole(
+            "test_writer",
+            "Write test cases that would catch this bug/verify this feature.",
+        ),
+    ],
+    "round_2": [
+        AgentRole(
+            "coder_a",
+            "Using the analysis and tests from Round 1, write the solution.",
+        ),
+        AgentRole(
+            "coder_b",
+            "Write an alternative solution, different approach from coder_a.",
+        ),
+    ],
+    "round_3": [
+        AgentRole(
+            "reviewer",
+            "Review both solutions against the tests. Which is better and why?",
+        ),
+        AgentRole(
+            "merger",
+            "Take the best parts of both solutions. Write the final version.",
+        ),
+    ],
+}
 
 
 # ---------------------------------------------------------------------------

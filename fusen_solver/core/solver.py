@@ -40,6 +40,9 @@ class SolveResult:
     scoring_time_s: float = 0.0
     # Stats
     num_agents: int = 0
+    # Collaborative mode fields
+    mode: str = "isolated"  # "isolated" or "collaborative"
+    rounds: list[dict[str, Any]] = field(default_factory=list)
 
 
 class FusenSolver:
@@ -88,6 +91,45 @@ class FusenSolver:
     ) -> SolveResult:
         """Solve a problem using N parallel agents with diverse strategies.
 
+        Supports three solve modes via ``problem.solve_mode``:
+        - ``"isolated"`` (default legacy behavior): single round of parallel agents.
+        - ``"collaborative"``: multi-round solving with specialized roles.
+        - ``"auto"``: data-driven selection between isolated and collaborative.
+
+        Args:
+            problem: The problem to solve.
+            n: Number of parallel agents. None = auto-select.
+            strategies: Override strategy selection. None = auto-select.
+            merge: Whether to merge top solutions into a final one.
+            on_solution: Callback when each agent finishes (agent_index, solution).
+
+        Returns:
+            SolveResult with ranked solutions and optional merge.
+        """
+        # Determine mode
+        mode = problem.solve_mode
+        if mode == "auto":
+            mode = self.learning_engine.suggest_mode(problem)
+            logger.info("Auto mode selected: %s", mode)
+
+        if mode == "collaborative":
+            return await self.solve_collaborative(problem)
+
+        return await self.solve_isolated(
+            problem, n=n, strategies=strategies, merge=merge, on_solution=on_solution
+        )
+
+    async def solve_isolated(
+        self,
+        problem: Problem,
+        *,
+        n: int | None = None,
+        strategies: list[Strategy] | None = None,
+        merge: bool = False,
+        on_solution: Callable[[int, Solution], None] | None = None,
+    ) -> SolveResult:
+        """Solve a problem using N parallel agents in a single round (original behavior).
+
         Args:
             problem: The problem to solve.
             n: Number of parallel agents. None = auto-select.
@@ -120,9 +162,10 @@ class FusenSolver:
             problem=problem,
             strategies_used=[s.name for s in strategies],
             num_agents=len(strategies),
+            mode="isolated",
         )
         logger.info(
-            "Solving with %d agents: %s",
+            "Solving (isolated) with %d agents: %s",
             len(strategies),
             [s.name for s in strategies],
         )
@@ -175,6 +218,128 @@ class FusenSolver:
 
         return result
 
+    async def solve_collaborative(self, problem: Problem) -> SolveResult:
+        """Solve a problem using multi-round collaborative agents.
+
+        Each round runs specialized roles in parallel. Outputs from earlier
+        rounds are synthesized and fed as context to subsequent rounds.
+        Supports early exit when a round produces a verified solution.
+
+        Args:
+            problem: The problem to solve (uses problem.max_rounds).
+
+        Returns:
+            SolveResult with collaborative round history and best solution.
+        """
+        from fusen_solver.strategies.presets import COLLABORATIVE_ROLES
+
+        t_start = time.perf_counter()
+
+        context: dict[str, Any] = {
+            "problem": problem.description,
+            "codebase": self._format_codebase(problem.context),
+        }
+        all_rounds: list[dict[str, Any]] = []
+        all_solutions: list[Solution] = []
+        total_agents = 0
+
+        for round_num in range(1, problem.max_rounds + 1):
+            round_key = f"round_{round_num}"
+            roles = COLLABORATIVE_ROLES.get(round_key, [])
+            if not roles:
+                logger.info("No roles defined for %s, stopping.", round_key)
+                break
+
+            logger.info(
+                "Collaborative round %d: %d roles (%s)",
+                round_num,
+                len(roles),
+                [r.name for r in roles],
+            )
+
+            # Build prompts for each role and run in parallel
+            tasks = []
+            for role in roles:
+                prompt = self._build_collaborative_prompt(role, context, round_num)
+                tasks.append(
+                    self.backend.generate(
+                        prompt, max_tokens=self.max_tokens, temperature=0.7
+                    )
+                )
+
+            raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Collect results
+            round_outputs: list[dict[str, Any]] = []
+            for i, (role, raw) in enumerate(zip(roles, raw_results)):
+                if isinstance(raw, Exception):
+                    logger.warning("Round %d, role %s failed: %s", round_num, role.name, raw)
+                    round_outputs.append({
+                        "role": role.name,
+                        "output": f"(failed: {raw})",
+                        "success": False,
+                    })
+                else:
+                    round_outputs.append({
+                        "role": role.name,
+                        "output": raw,
+                        "success": True,
+                    })
+                    # Build a Solution from each successful agent output
+                    sol = Solution(
+                        code=self._extract_code_blocks(raw),
+                        explanation=raw,
+                        strategy_used=f"collaborative_{round_key}_{role.name}",
+                        metadata={"round": round_num, "role": role.name},
+                    )
+                    all_solutions.append(sol)
+
+            total_agents += len(roles)
+
+            # Synthesize round outputs into context for next round
+            synthesis = await self._synthesize_round(round_outputs, round_num, context)
+            context[round_key] = synthesis
+            all_rounds.append(synthesis)
+
+            # Early exit: if synthesis indicates a verified solution
+            if synthesis.get("has_solution") and synthesis.get("tests_pass"):
+                logger.info("Early exit at round %d: verified solution found.", round_num)
+                break
+
+        # Score all collected solutions
+        t_score = time.perf_counter()
+        best: Solution | None = None
+        if all_solutions:
+            scored = await self.scoring_engine.score_all(
+                problem, all_solutions, backend=self.backend
+            )
+            scored.sort(key=lambda s: s.score, reverse=True)
+            all_solutions = scored
+            best = scored[0] if scored else None
+        scoring_time = time.perf_counter() - t_score
+
+        result = SolveResult(
+            problem=problem,
+            solutions=all_solutions,
+            best=best,
+            strategies_used=[s.strategy_used for s in all_solutions],
+            total_time_s=time.perf_counter() - t_start,
+            scoring_time_s=scoring_time,
+            num_agents=total_agents,
+            mode="collaborative",
+            rounds=all_rounds,
+        )
+
+        logger.info(
+            "Collaborative solve complete: %d rounds, %d solutions, best=%.2f, %.1fs total",
+            len(all_rounds),
+            len(all_solutions),
+            best.score if best else 0.0,
+            result.total_time_s,
+        )
+
+        return result
+
     async def solve_best_of_n(
         self,
         problem: Problem,
@@ -203,6 +368,137 @@ class FusenSolver:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _build_collaborative_prompt(
+        self,
+        role: Any,  # AgentRole from presets
+        context: dict[str, Any],
+        round_num: int,
+    ) -> list[dict[str, str]]:
+        """Build chat messages for a collaborative agent role.
+
+        The prompt includes the problem description, codebase, the role's
+        specific instructions, and accumulated context from prior rounds
+        (if the role receives context).
+        """
+        system = (
+            f"You are a specialized '{role.name}' agent in round {round_num} "
+            f"of a collaborative problem-solving session.\n\n"
+            f"## Codebase\n\n```\n{context.get('codebase', '')}\n```"
+        )
+
+        # Accumulate prior round context
+        prior_context = ""
+        if role.receives_context:
+            for r in range(1, round_num):
+                rkey = f"round_{r}"
+                if rkey in context:
+                    round_data = context[rkey]
+                    prior_context += f"\n\n## Round {r} Results\n\n"
+                    for output in round_data.get("outputs", []):
+                        prior_context += (
+                            f"### {output['role']}\n{output['output']}\n\n"
+                        )
+
+        user = (
+            f"## Problem\n\n{context.get('problem', '')}\n\n"
+            f"## Your Role: {role.name}\n\n{role.prompt_template}\n\n"
+            f"{prior_context}"
+            "## Instructions\n\n"
+            "Write the complete output for your role. Include ALL code -- "
+            "do not use placeholders or ellipsis."
+        )
+
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+
+    async def _synthesize_round(
+        self,
+        round_outputs: list[dict[str, Any]],
+        round_num: int,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Synthesize outputs from a collaborative round into a summary.
+
+        Uses the LLM to combine multiple agent outputs into a coherent
+        synthesis. Detects whether a solution and passing tests were produced.
+
+        Returns:
+            Dict with keys: outputs, summary, has_solution, tests_pass, solutions.
+        """
+        # Build a combined text of all round outputs
+        outputs_text = ""
+        for output in round_outputs:
+            outputs_text += (
+                f"### {output['role']}\n\n{output['output']}\n\n---\n\n"
+            )
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a synthesis agent. Combine the outputs from multiple "
+                    "specialized agents into a coherent summary. Identify:\n"
+                    "1. Key insights and findings\n"
+                    "2. Code solutions (if any)\n"
+                    "3. Whether tests were written and if they would pass\n\n"
+                    "End your response with a JSON block:\n"
+                    "```json\n"
+                    '{"has_solution": true/false, "tests_pass": true/false}\n'
+                    "```"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"## Problem\n\n{context.get('problem', '')}\n\n"
+                    f"## Round {round_num} Outputs\n\n{outputs_text}\n\n"
+                    "Synthesize these outputs."
+                ),
+            },
+        ]
+
+        try:
+            synthesis_text = await self.backend.generate(
+                messages, max_tokens=self.max_tokens
+            )
+        except Exception as e:
+            logger.warning("Synthesis failed for round %d: %s", round_num, e)
+            synthesis_text = ""
+
+        # Parse status from the synthesis
+        has_solution = False
+        tests_pass = False
+        try:
+            import re
+
+            json_match = re.search(r"```json\s*({.*?})\s*```", synthesis_text, re.DOTALL)
+            if json_match:
+                import json
+
+                status = json.loads(json_match.group(1))
+                has_solution = bool(status.get("has_solution", False))
+                tests_pass = bool(status.get("tests_pass", False))
+        except (ValueError, KeyError):
+            pass
+
+        # Extract code solutions from round outputs
+        solutions: list[dict[str, str]] = []
+        for output in round_outputs:
+            if output.get("success"):
+                code = self._extract_code_blocks(output["output"])
+                if code:
+                    solutions.append(code)
+
+        return {
+            "outputs": round_outputs,
+            "summary": synthesis_text,
+            "has_solution": has_solution,
+            "tests_pass": tests_pass,
+            "solutions": solutions,
+        }
 
     async def _run_agent(
         self,

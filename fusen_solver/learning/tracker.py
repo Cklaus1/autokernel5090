@@ -63,6 +63,8 @@ class LearningEngine:
         )
         # Raw history for analysis
         self._history: list[dict[str, Any]] = []
+        # Mode history: tracks which solve mode works for which problem type
+        self._mode_history: list[dict[str, Any]] = []
         self._load()
 
     def record(
@@ -165,6 +167,57 @@ class LearningEngine:
         else:
             return 8
 
+    def record_mode(self, problem_type: str, mode: str, accepted: bool) -> None:
+        """Track which solve mode works better for which problem type.
+
+        Args:
+            problem_type: The type of problem (bug_fix, feature, refactor, etc.).
+            mode: The solve mode used ("isolated" or "collaborative").
+            accepted: Whether the solution was accepted by the user.
+        """
+        self._mode_history.append({
+            "type": problem_type,
+            "mode": mode,
+            "accepted": accepted,
+        })
+        self._save()
+        logger.info(
+            "Recorded mode: type=%s, mode=%s, accepted=%s",
+            problem_type,
+            mode,
+            accepted,
+        )
+
+    def suggest_mode(self, problem: Problem) -> str:
+        """Suggest isolated or collaborative mode based on history.
+
+        Uses historical acceptance rates when enough data is available,
+        otherwise falls back to heuristics based on problem type.
+
+        Args:
+            problem: The problem to solve.
+
+        Returns:
+            "isolated" or "collaborative".
+        """
+        ptype = problem.problem_type if problem.problem_type != "auto" else "unknown"
+        type_history = [h for h in self._mode_history if h["type"] == ptype]
+
+        if len(type_history) < self.min_data:
+            # Not enough data -- use heuristic
+            if ptype in ("bug_fix", "refactor", "architecture"):
+                return "collaborative"  # complex tasks benefit from rounds
+            return "isolated"  # simple tasks don't need rounds
+
+        # Enough data -- use acceptance rates
+        collab_entries = [h["accepted"] for h in type_history if h["mode"] == "collaborative"]
+        isolated_entries = [h["accepted"] for h in type_history if h["mode"] == "isolated"]
+
+        collab_rate = sum(collab_entries) / len(collab_entries) if collab_entries else 0.0
+        isolated_rate = sum(isolated_entries) / len(isolated_entries) if isolated_entries else 0.0
+
+        return "collaborative" if collab_rate > isolated_rate else "isolated"
+
     def get_stats(self) -> dict[str, Any]:
         """Return a summary of learning stats for display."""
         summary: dict[str, Any] = {}
@@ -178,6 +231,28 @@ class LearningEngine:
                 }
                 for name, r in sorted(strategies.items(), key=lambda x: x[1].win_rate, reverse=True)
             }
+
+        # Include mode stats if any exist
+        if self._mode_history:
+            mode_stats: dict[str, dict[str, Any]] = {}
+            for entry in self._mode_history:
+                ptype = entry["type"]
+                mode = entry["mode"]
+                if ptype not in mode_stats:
+                    mode_stats[ptype] = {}
+                if mode not in mode_stats[ptype]:
+                    mode_stats[ptype][mode] = {"accepted": 0, "total": 0}
+                mode_stats[ptype][mode]["total"] += 1
+                if entry["accepted"]:
+                    mode_stats[ptype][mode]["accepted"] += 1
+            # Add acceptance rates
+            for ptype, modes in mode_stats.items():
+                for mode, data in modes.items():
+                    data["acceptance_rate"] = round(
+                        data["accepted"] / data["total"], 3
+                    ) if data["total"] > 0 else 0.0
+            summary["_mode_stats"] = mode_stats
+
         return summary
 
     # ------------------------------------------------------------------
@@ -192,6 +267,7 @@ class LearningEngine:
         try:
             data = json.loads(self.db_path.read_text())
             self._history = data.get("history", [])
+            self._mode_history = data.get("mode_history", [])
 
             # Rebuild stats from history
             for entry in self._history:
@@ -213,7 +289,7 @@ class LearningEngine:
         """Save history to disk."""
         try:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {"history": self._history}
+            data = {"history": self._history, "mode_history": self._mode_history}
             self.db_path.write_text(json.dumps(data, indent=2))
         except Exception as e:
             logger.warning("Failed to save history: %s", e)
