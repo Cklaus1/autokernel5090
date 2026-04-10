@@ -2,7 +2,7 @@
 
 Scores solutions using multiple signals:
 1. Syntax check (instant, binary)
-2. Test execution (if tests provided)
+2. Test execution (if tests provided) — runs in Docker sandbox when available
 3. LLM review (quality assessment)
 4. Diff quality (minimal changes, clean diff)
 5. Confidence (model's self-reported confidence)
@@ -20,11 +20,24 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fusen_solver.core.interfaces import Problem, Solution
+from fusen_solver.scoring.sandbox import TestSandbox, _docker_available
 
 if TYPE_CHECKING:
     from fusen_solver.core.interfaces import LLMBackend
 
 logger = logging.getLogger(__name__)
+
+# Module-level sandbox instance (shared across ScoringEngine instances so that
+# Docker availability is only probed once per process).
+_sandbox: TestSandbox | None = None
+
+
+def _get_sandbox() -> TestSandbox:
+    """Return the module-level sandbox, creating it lazily on first call."""
+    global _sandbox
+    if _sandbox is None:
+        _sandbox = TestSandbox()
+    return _sandbox
 
 
 class ScoringEngine:
@@ -142,38 +155,35 @@ class ScoringEngine:
 
     @staticmethod
     def _run_tests(problem: Problem, solution: Solution) -> float:
-        """Run test commands against the solution. Returns pass rate 0-1."""
+        """Run test commands against the solution. Returns pass rate 0-1.
+
+        Delegates to ``TestSandbox``, which runs commands inside a Docker
+        container (no network, 256 MB memory cap) when Docker is available,
+        and falls back to an unsandboxed subprocess call otherwise.
+        """
         if not problem.tests:
             return 0.5
 
-        passed = 0
-        total = len(problem.tests)
+        sandbox = _get_sandbox()
+        result = sandbox.run_tests(solution.code, problem.tests)
 
-        for test_cmd in problem.tests:
-            # Write solution code to temp files
-            with tempfile.TemporaryDirectory() as tmpdir:
-                for filename, content in solution.code.items():
-                    filepath = Path(tmpdir) / filename
-                    filepath.parent.mkdir(parents=True, exist_ok=True)
-                    filepath.write_text(content)
+        if not result["sandboxed"]:
+            logger.debug("Tests ran unsandboxed (Docker unavailable)")
 
-                try:
-                    result = subprocess.run(
-                        test_cmd,
-                        shell=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                        cwd=tmpdir,
+        total = result["total"]
+        passed = result["passed"]
+
+        # Log individual failures at DEBUG level for easier diagnosis.
+        for r in result["results"]:
+            if not r.get("passed", False):
+                if "error" in r:
+                    logger.debug("Test error (%s): %s", r["command"], r["error"])
+                else:
+                    logger.debug(
+                        "Test failed: %s\nstderr: %s",
+                        r["command"],
+                        r.get("stderr", "")[:300],
                     )
-                    if result.returncode == 0:
-                        passed += 1
-                    else:
-                        logger.debug("Test failed: %s\nstderr: %s", test_cmd, result.stderr[:300])
-                except subprocess.TimeoutExpired:
-                    logger.debug("Test timed out: %s", test_cmd)
-                except Exception as e:
-                    logger.debug("Test error: %s", e)
 
         return passed / total if total > 0 else 0.5
 

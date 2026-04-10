@@ -1163,7 +1163,8 @@ class TestRacingSolve:
                 super().__init__()
                 self._call_count = 0
 
-            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None,
+                               priority=None, **kwargs):
                 self._call_count += 1
                 idx = self._call_count
                 if idx == 1:
@@ -1201,7 +1202,8 @@ class TestRacingSolve:
         """When no agent beats threshold before timeout, take best available."""
 
         class SlowBackend(MockBackend):
-            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None,
+                               priority=None, **kwargs):
                 await asyncio.sleep(10)
                 return "```python\ndef fix(): return 42\n```"
 
@@ -1232,7 +1234,8 @@ class TestRacingSolve:
         call_count = 0
 
         class RejectThenAcceptBackend(MockBackend):
-            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None,
+                               priority=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 idx = call_count
@@ -1268,7 +1271,8 @@ class TestRacingSolve:
         """KV savings stats are properly tracked."""
 
         class FastBackend(MockBackend):
-            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None,
+                               priority=None, **kwargs):
                 return "```python\ndef fix(): return 42\n```"
 
         backend = FastBackend()
@@ -1414,3 +1418,315 @@ class TestRacingCoordinator:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# Decomposed mode tests
+# ---------------------------------------------------------------------------
+
+
+class TestDecomposedSolving:
+    """Tests for the file-level decomposition orchestrator."""
+
+    @pytest.mark.asyncio
+    async def test_decompose_basic(self):
+        """Decomposed mode produces a result with mode='decomposed'."""
+        backend = MockBackend(
+            response="```python\ndef main():\n    pass\n```\n\nDone."
+        )
+        solver = FusenSolver(backend=backend, default_n=2, auto_n=False)
+
+        problem = Problem(
+            description="Build a REST API for user management",
+            context={},
+            problem_type="feature",
+            solve_mode="decomposed",
+        )
+
+        result = await solver.solve(problem)
+
+        assert result.mode == "decomposed"
+        assert result.best is not None
+        assert result.total_time_s > 0
+        assert len(result.rounds) == 1
+        assert "decomposition" in result.rounds[0]
+        assert "files_generated" in result.rounds[0]
+
+    @pytest.mark.asyncio
+    async def test_decompose_llm_parsing(self):
+        """Decomposition parses a valid JSON file list from LLM output."""
+        import json as _json
+
+        decomposition_json = _json.dumps([
+            {"file": "models.py", "description": "Data models", "depends_on": []},
+            {"file": "routes.py", "description": "API routes", "depends_on": ["models.py"]},
+            {"file": "tests/test_api.py", "description": "Tests", "depends_on": ["routes.py"]},
+        ])
+
+        call_count = 0
+
+        class DecompBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return decomposition_json
+                return "```python\nx = 1\n```"
+
+        backend = DecompBackend()
+        solver = FusenSolver(backend=backend, default_n=1, auto_n=False)
+
+        problem = Problem(
+            description="Build a REST API",
+            context={},
+            solve_mode="decomposed",
+        )
+
+        result = await solver.solve(problem)
+
+        assert result.mode == "decomposed"
+        assert result.best is not None
+        decomp = result.rounds[0]["decomposition"]
+        assert len(decomp) == 3
+        assert decomp[0]["file"] == "models.py"
+        assert decomp[1]["file"] == "routes.py"
+        assert decomp[2]["file"] == "tests/test_api.py"
+
+    @pytest.mark.asyncio
+    async def test_decompose_fallback_pattern(self):
+        """When LLM decomposition fails, falls back to known patterns."""
+
+        class FailingDecompBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None, **kwargs):
+                if temperature <= 0.3:
+                    return "I cannot parse this into JSON"
+                return "```python\nx = 1\n```"
+
+        backend = FailingDecompBackend()
+        solver = FusenSolver(backend=backend, default_n=1, auto_n=False)
+
+        problem = Problem(
+            description="Build a REST API for orders",
+            context={},
+            solve_mode="decomposed",
+        )
+
+        result = await solver.solve(problem)
+
+        assert result.mode == "decomposed"
+        decomp = result.rounds[0]["decomposition"]
+        files = [d["file"] for d in decomp]
+        assert "models.py" in files
+        assert "routes.py" in files
+
+    def test_dependency_levels_no_deps(self):
+        """Files with no dependencies all go into one level."""
+        decomposition = [
+            {"file": "a.py", "depends_on": []},
+            {"file": "b.py", "depends_on": []},
+            {"file": "c.py", "depends_on": []},
+        ]
+        levels = FusenSolver._build_dependency_levels(decomposition)
+        assert len(levels) == 1
+        assert len(levels[0]) == 3
+
+    def test_dependency_levels_chain(self):
+        """Linear dependency chain produces one file per level."""
+        decomposition = [
+            {"file": "a.py", "depends_on": []},
+            {"file": "b.py", "depends_on": ["a.py"]},
+            {"file": "c.py", "depends_on": ["b.py"]},
+        ]
+        levels = FusenSolver._build_dependency_levels(decomposition)
+        assert len(levels) == 3
+        assert levels[0][0]["file"] == "a.py"
+        assert levels[1][0]["file"] == "b.py"
+        assert levels[2][0]["file"] == "c.py"
+
+    def test_dependency_levels_diamond(self):
+        """Diamond dependency graph: a -> {b,c} -> d."""
+        decomposition = [
+            {"file": "a.py", "depends_on": []},
+            {"file": "b.py", "depends_on": ["a.py"]},
+            {"file": "c.py", "depends_on": ["a.py"]},
+            {"file": "d.py", "depends_on": ["b.py", "c.py"]},
+        ]
+        levels = FusenSolver._build_dependency_levels(decomposition)
+        assert len(levels) == 3
+        assert levels[0][0]["file"] == "a.py"
+        level1_files = {s["file"] for s in levels[1]}
+        assert level1_files == {"b.py", "c.py"}
+        assert levels[2][0]["file"] == "d.py"
+
+    def test_dependency_levels_circular(self):
+        """Circular dependencies are broken by grouping into one level."""
+        decomposition = [
+            {"file": "a.py", "depends_on": ["b.py"]},
+            {"file": "b.py", "depends_on": ["a.py"]},
+        ]
+        levels = FusenSolver._build_dependency_levels(decomposition)
+        assert len(levels) == 1
+        assert len(levels[0]) == 2
+
+    def test_merge_file_solutions(self):
+        """Merge combines per-file results into a single Solution."""
+        decomposition = [
+            {"file": "a.py", "description": "Module A"},
+            {"file": "b.py", "description": "Module B"},
+        ]
+
+        mock_result_a = SolveResult(
+            problem=SAMPLE_PROBLEM,
+            best=Solution(
+                code={"block_0.txt": "# a.py content"},
+                explanation="Generated a.py",
+            ),
+        )
+        mock_result_b = SolveResult(
+            problem=SAMPLE_PROBLEM,
+            best=Solution(
+                code={"block_0.txt": "# b.py content"},
+                explanation="Generated b.py",
+            ),
+        )
+
+        file_results = [
+            (decomposition[0], mock_result_a),
+            (decomposition[1], mock_result_b),
+        ]
+
+        merged = FusenSolver._merge_file_solutions(decomposition, file_results)
+
+        assert "a.py" in merged.code
+        assert "b.py" in merged.code
+        assert merged.code["a.py"] == "# a.py content"
+        assert merged.code["b.py"] == "# b.py content"
+        assert merged.strategy_used == "decomposed"
+        assert "a.py" in merged.metadata["generated"]
+        assert "b.py" in merged.metadata["generated"]
+
+    @pytest.mark.asyncio
+    async def test_integration_verification(self):
+        """Integration verification returns corrected code."""
+
+        class IntegrationBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None, **kwargs):
+                return (
+                    "All files look good with one fix:\n\n"
+                    "```a.py\n# corrected a.py\nimport b\n```\n\n"
+                    "```b.py\n# corrected b.py\ndef helper(): pass\n```"
+                )
+
+        backend = IntegrationBackend()
+        solver = FusenSolver(backend=backend, default_n=1, auto_n=False)
+
+        merged = Solution(
+            code={"a.py": "# original a.py", "b.py": "# original b.py"},
+            strategy_used="decomposed",
+        )
+        problem = Problem(description="Test project")
+
+        result = await solver._verify_integration(merged, problem)
+
+        assert result is not None
+        assert "a.py" in result.code
+        assert "b.py" in result.code
+        assert "corrected" in result.code["a.py"]
+        assert result.strategy_used == "decomposed_integrated"
+        assert result.metadata.get("integration_pass") is True
+
+    @pytest.mark.asyncio
+    async def test_integration_verification_empty(self):
+        """Integration verification returns None for empty code."""
+        backend = MockBackend()
+        solver = FusenSolver(backend=backend, default_n=1, auto_n=False)
+
+        merged = Solution(code={}, strategy_used="decomposed")
+        problem = Problem(description="Test")
+
+        result = await solver._verify_integration(merged, problem)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_decompose_with_context(self):
+        """Decomposed mode passes existing codebase as context to sub-problems."""
+        prompts_seen: list[str] = []
+
+        class ContextCheckBackend(MockBackend):
+            async def generate(self, messages, *, max_tokens=4096, temperature=0.7, stop=None, **kwargs):
+                for msg in messages:
+                    if msg["role"] == "user":
+                        prompts_seen.append(msg["content"])
+                if temperature <= 0.3:
+                    return '[{"file": "new.py", "description": "New module", "depends_on": []}]'
+                return "```python\ndef new_func(): pass\n```"
+
+        backend = ContextCheckBackend()
+        solver = FusenSolver(backend=backend, default_n=1, auto_n=False)
+
+        problem = Problem(
+            description="Add a new module",
+            context={"existing.py": "# existing code"},
+            solve_mode="decomposed",
+        )
+
+        result = await solver.solve(problem)
+        assert result.mode == "decomposed"
+
+
+class TestDecomposedLearning:
+    """Tests for decomposed mode tracking in the learning engine."""
+
+    def test_suggest_mode_decomposed_heuristic(self):
+        """Feature problems with multi-file keywords suggest decomposed mode."""
+        engine = LearningEngine(db_path="/tmp/fusen_test_nonexistent.json", min_data=10)
+
+        problem = Problem(
+            description="Build a REST API for user management",
+            problem_type="feature",
+            solve_mode="auto",
+        )
+        mode = engine.suggest_mode(problem)
+        assert mode == "decomposed"
+
+    def test_suggest_mode_decomposed_data_driven(self):
+        """With enough data, decomposed wins if it has highest acceptance rate."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            db_path = f.name
+
+        try:
+            engine = LearningEngine(db_path=db_path, min_data=3)
+
+            for _ in range(5):
+                engine.record_mode("feature", "decomposed", accepted=True)
+                engine.record_mode("feature", "isolated", accepted=False)
+                engine.record_mode("feature", "collaborative", accepted=False)
+
+            problem = Problem(
+                description="Build something",
+                problem_type="feature",
+                solve_mode="auto",
+            )
+            mode = engine.suggest_mode(problem)
+            assert mode == "decomposed"
+        finally:
+            Path(db_path).unlink(missing_ok=True)
+
+    def test_mode_stats_include_decomposed(self):
+        """get_stats includes decomposed mode in _mode_stats."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            db_path = f.name
+
+        try:
+            engine = LearningEngine(db_path=db_path)
+            engine.record_mode("feature", "decomposed", accepted=True)
+            engine.record_mode("feature", "decomposed", accepted=True)
+            engine.record_mode("feature", "isolated", accepted=False)
+
+            stats = engine.get_stats()
+            assert "_mode_stats" in stats
+            assert "feature" in stats["_mode_stats"]
+            assert "decomposed" in stats["_mode_stats"]["feature"]
+            assert stats["_mode_stats"]["feature"]["decomposed"]["acceptance_rate"] == 1.0
+        finally:
+            Path(db_path).unlink(missing_ok=True)
