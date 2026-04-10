@@ -276,3 +276,9 @@ RIGHT approach (what we learned):
 **Also found:** C++ kernel crashes at C≥8 (buffer OOB), and eager mode is 15 tok/s at C=1 (much slower than the 6,685 batch measurement, which used a different config).
 **Root cause:** FusenKVMetadataBuilder.build_for_cudagraph_capture() — the pre-allocated tensors aren't being updated in-place during replay. This is a vLLM API integration bug.
 **Fix needed:** Debug the metadata builder's tensor lifecycle during CUDA graph capture vs replay.
+
+## Discovery #39: N-gram spec decode HURTS Gemma4 26B by -11%
+**My prediction:** 1.3-1.8x speedup for code
+**Found:** -30% on Python code, neutral on SQL/bash. Average -11%.
+**Why:** Model is compute-bound at 123 tok/s (not memory-bound). Speculative overhead (draft+verify) exceeds n-gram hit rate. Novel code has low repetition. vLLM auto-disables async scheduling with n-gram.
+**Lesson:** Speculative decode helps memory-bound models (small/dense). Gemma4 26B MoE activates 2.47B params/token — this is actually compute-heavy per-token despite being "only" 26B.
