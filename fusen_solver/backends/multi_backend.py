@@ -111,18 +111,21 @@ class MultiBackend(LLMBackend):
         temperature: float = 0.7,
         stop: list[str] | None = None,
         session_id: str | None = None,
+        strategy_name: str | None = None,
         **kwargs,
     ) -> str:
-        backend = self.route(session_id=session_id)
+        backend = self.route(strategy_name=strategy_name, session_id=session_id)
         try:
             return await backend.generate(
-                messages, max_tokens=max_tokens, temperature=temperature, stop=stop
+                messages, max_tokens=max_tokens, temperature=temperature,
+                stop=stop, **kwargs,
             )
         except Exception as e:
-            if self._fallback:
+            if self._fallback and backend is not self._fallback:
                 logger.warning("Primary backend failed (%s), using fallback", e)
                 return await self._fallback.generate(
-                    messages, max_tokens=max_tokens, temperature=temperature, stop=stop
+                    messages, max_tokens=max_tokens, temperature=temperature,
+                    stop=stop, **kwargs,
                 )
             raise
 
@@ -141,7 +144,8 @@ class MultiBackend(LLMBackend):
         backend = self.route(strategy_name, session_id=session_id)
         try:
             return await backend.generate(
-                messages, max_tokens=max_tokens, temperature=temperature, stop=stop
+                messages, max_tokens=max_tokens, temperature=temperature,
+                stop=stop, **kwargs,
             )
         except Exception as e:
             if self._fallback and backend is not self._fallback:
@@ -150,7 +154,8 @@ class MultiBackend(LLMBackend):
                     backend.name, strategy_name, e,
                 )
                 return await self._fallback.generate(
-                    messages, max_tokens=max_tokens, temperature=temperature, stop=stop
+                    messages, max_tokens=max_tokens, temperature=temperature,
+                    stop=stop, **kwargs,
                 )
             raise
 
@@ -161,12 +166,52 @@ class MultiBackend(LLMBackend):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         stop: list[str] | None = None,
+        session_id: str | None = None,
+        strategy_name: str | None = None,
+        **kwargs,
     ) -> AsyncIterator[str]:
-        backend = self._default
-        async for token in backend.stream(
-            messages, max_tokens=max_tokens, temperature=temperature, stop=stop
-        ):
-            yield token
+        """Stream from the backend selected by strategy/session routing."""
+        backend = self.route(strategy_name=strategy_name, session_id=session_id)
+        try:
+            async for token in backend.stream(
+                messages, max_tokens=max_tokens, temperature=temperature,
+                stop=stop, **kwargs,
+            ):
+                yield token
+        except Exception as e:
+            if self._fallback and backend is not self._fallback:
+                logger.warning(
+                    "Primary backend stream failed (%s), using fallback", e
+                )
+                async for token in self._fallback.stream(
+                    messages, max_tokens=max_tokens, temperature=temperature,
+                    stop=stop, **kwargs,
+                ):
+                    yield token
+            else:
+                raise
+
+    async def close(self) -> None:
+        """Close all managed backends."""
+        for backend in self._all_backends():
+            if hasattr(backend, "close"):
+                await backend.close()
+
+    async def __aenter__(self) -> "MultiBackend":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
+
+    def _all_backends(self) -> list[LLMBackend]:
+        """Return the set of unique backends managed by this router."""
+        seen: set[int] = set()
+        result: list[LLMBackend] = []
+        for b in [self._default, *self._routes.values(), self._fallback]:
+            if b is not None and id(b) not in seen:
+                seen.add(id(b))
+                result.append(b)
+        return result
 
     @property
     def supports_batch(self) -> bool:

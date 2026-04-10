@@ -109,7 +109,12 @@ class ScoringEngine:
         return solutions
 
     def _weighted_score(self, subscores: dict[str, float], has_tests: bool) -> float:
-        """Compute weighted average, redistributing weights if tests are missing."""
+        """Compute weighted average, redistributing weights if tests are missing.
+
+        When a signal is absent (subscore == -1 sentinel or weight == 0), its
+        weight is excluded from both the numerator *and* the denominator so that
+        the remaining weights are effectively renormalized to sum to 1.0.
+        """
         weights = dict(self.weights)
 
         if not has_tests:
@@ -117,8 +122,12 @@ class ScoringEngine:
             weights["review"] += weights["tests"]
             weights["tests"] = 0.0
 
-        total_weight = sum(weights.values())
-        if total_weight <= 0:
+        # Only count signals that are actually present (weight > 0 and subscore >= 0).
+        active_weight = sum(
+            w for signal, w in weights.items()
+            if w > 0 and signal in subscores and subscores[signal] >= 0
+        )
+        if active_weight <= 0:
             return 0.5
 
         score = 0.0
@@ -126,7 +135,7 @@ class ScoringEngine:
             if weight > 0 and signal in subscores and subscores[signal] >= 0:
                 score += weight * subscores[signal]
 
-        return min(1.0, max(0.0, score / total_weight))
+        return min(1.0, max(0.0, score / active_weight))
 
     @staticmethod
     def _check_syntax(solution: Solution) -> float:

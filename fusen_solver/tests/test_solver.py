@@ -38,7 +38,7 @@ class MockBackend(LLMBackend):
                        priority=None, **kwargs):
         return self._response
 
-    async def stream(self, messages, *, max_tokens=4096, temperature=0.7, stop=None):
+    async def stream(self, messages, *, max_tokens=4096, temperature=0.7, stop=None, **kwargs):
         for word in self._response.split():
             yield word + " "
 

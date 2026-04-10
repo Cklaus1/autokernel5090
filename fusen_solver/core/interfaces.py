@@ -79,6 +79,7 @@ class LLMBackend(ABC):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         stop: list[str] | None = None,
+        **kwargs,
     ) -> str:
         """Generate a completion from the given messages.
 
@@ -87,6 +88,8 @@ class LLMBackend(ABC):
             max_tokens: Maximum tokens to generate.
             temperature: Sampling temperature.
             stop: Optional stop sequences.
+            **kwargs: Extra keyword arguments (e.g. ``priority``, ``session_id``)
+                accepted and forwarded by concrete backends as appropriate.
 
         Returns:
             The generated text content.
@@ -101,6 +104,7 @@ class LLMBackend(ABC):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         stop: list[str] | None = None,
+        **kwargs,
     ) -> AsyncIterator[str]:
         """Stream a completion token-by-token.
 
