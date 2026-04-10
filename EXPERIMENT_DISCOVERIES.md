@@ -282,3 +282,10 @@ RIGHT approach (what we learned):
 **Found:** -30% on Python code, neutral on SQL/bash. Average -11%.
 **Why:** Model is compute-bound at 123 tok/s (not memory-bound). Speculative overhead (draft+verify) exceeds n-gram hit rate. Novel code has low repetition. vLLM auto-disables async scheduling with n-gram.
 **Lesson:** Speculative decode helps memory-bound models (small/dense). Gemma4 26B MoE activates 2.47B params/token — this is actually compute-heavy per-token despite being "only" 26B.
+
+## Discovery #40: Expert pruning fails even at 0.13% (5 of 3840 slots)
+**Previous:** 50% pruning = garbage. Maybe 5% would work?
+**Retried:** Zeroed just 5 experts in layer 0 (the least active, 0.02% frequency each)
+**Found:** 6/20 coherent (30%) — same catastrophic failure as 50% pruning
+**Why:** Layer 0 is input processing — any disruption propagates through all 29 layers. Also, activation frequency from embeddings ≠ runtime importance.
+**FINAL VERDICT:** Expert manipulation is completely off the table for Gemma4 without fine-tuning. No safe set of experts to disable exists.
