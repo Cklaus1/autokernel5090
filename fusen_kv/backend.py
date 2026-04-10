@@ -18,6 +18,24 @@ import torch
 # Disabled by default (zero overhead in production).
 _DEBUG = os.environ.get("FUSEN_DEBUG", "0") == "1"
 
+# ---- Try to load C++ FusenCache decode attention kernel ----
+# The C++ kernel is CUDA-graph compatible and avoids Triton JIT overhead.
+# Falls back to Triton if the .so is not available.
+_FUSENCACHE_CPP_SO = "/tmp/build_fusencache/fusencache_decode.so"
+_HAS_CPP_DECODE = False
+try:
+    if os.path.exists(_FUSENCACHE_CPP_SO):
+        torch.ops.load_library(_FUSENCACHE_CPP_SO)
+        # Verify the op is registered
+        _ = torch.ops.fusencache.decode_attention
+        _HAS_CPP_DECODE = True
+        logging.getLogger(__name__).info(
+            "FusenCache C++ decode kernel loaded from %s", _FUSENCACHE_CPP_SO)
+except Exception as e:
+    logging.getLogger(__name__).warning(
+        "FusenCache C++ decode kernel not available, falling back to Triton: %s", e)
+    _HAS_CPP_DECODE = False
+
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionCGSupport,
@@ -37,6 +55,21 @@ if TYPE_CHECKING:
 from fusen_kv.spec_resolver import resolve_spec
 
 logger = logging.getLogger(__name__)
+
+
+def _auto_num_kv_splits(max_seq_len: int, max_batch_size: int) -> int:
+    """Choose num_kv_splits for split-K decode (mirrors Triton auto-select)."""
+    # Heuristic: enough splits to keep SMs busy but not so many that
+    # the reduce stage dominates. Typical: 8 for long seqs, 4 for short.
+    blocks_per_seq = (max_seq_len + 15) // 16  # page_size=16
+    if blocks_per_seq >= 512:
+        return 16
+    elif blocks_per_seq >= 128:
+        return 8
+    elif blocks_per_seq >= 32:
+        return 4
+    else:
+        return 2
 
 
 # ============================================================
@@ -311,14 +344,36 @@ class FusenKVImpl(AttentionImplBase):
         from kv_cache_gen.generate import make_decode_fn, make_store_fn
 
         max_seq = sliding_window if sliding_window else 131072
-        self.decode_fn = make_decode_fn(
-            self.spec,
-            block_kv=16, block_h=8, num_warps=2,
-            max_seq_len=max_seq,
-            max_batch_size=256,
-            cuda_graph_safe=True,
-            logits_soft_cap=self.logits_soft_cap,
-        )
+
+        # Try C++ decode kernel first (CUDA graph compatible, no Triton JIT)
+        self._use_cpp_decode = False
+        if _HAS_CPP_DECODE and self.spec.k_bits == 4 and self.spec.v_bits == 4:
+            self._use_cpp_decode = True
+            self._cpp_num_kv_splits = _auto_num_kv_splits(max_seq, 256)
+            self._cpp_buffers = {}  # persistent buffers keyed by (B, Hq, D, device)
+            logger.info(
+                "FusenKV: using C++ decode kernel (num_kv_splits=%d)",
+                self._cpp_num_kv_splits,
+            )
+            # Still build Triton as fallback (e.g. for non-k4v4 layers if mixed)
+            self.decode_fn = make_decode_fn(
+                self.spec,
+                block_kv=16, block_h=8, num_warps=2,
+                max_seq_len=max_seq,
+                max_batch_size=256,
+                cuda_graph_safe=True,
+                logits_soft_cap=self.logits_soft_cap,
+            )
+        else:
+            self.decode_fn = make_decode_fn(
+                self.spec,
+                block_kv=16, block_h=8, num_warps=2,
+                max_seq_len=max_seq,
+                max_batch_size=256,
+                cuda_graph_safe=True,
+                logits_soft_cap=self.logits_soft_cap,
+            )
+
         self.store_fn = make_store_fn(self.spec)
 
         # Scales tensor -- lazily allocated per layer
@@ -351,6 +406,56 @@ class FusenKVImpl(AttentionImplBase):
         # Alias for the store_fn which expects layer._fc_scales
         layer._fc_scales = layer._fusen_scales
         self._scales_initialized = True
+
+    def _cpp_decode(self, query, kv_cache, scales, block_table, seq_lens,
+                    scale, num_kv_heads):
+        """Decode using the C++ CUDA kernel (CUDA graph compatible).
+
+        Same signature as Triton decode_fn for drop-in replacement.
+        Manages persistent output/mid_out buffers for CUDA graph safety.
+        """
+        B, Hq, D = query.shape
+        Hk = num_kv_heads
+        kv_group_size = Hq // Hk
+        page_size = kv_cache.shape[1]
+
+        # Persistent buffers (same pattern as Triton's cuda_graph_safe mode)
+        key = (B, Hq, D, query.device, query.dtype)
+        if key not in self._cpp_buffers:
+            self._cpp_buffers[key] = {
+                'mid_out': torch.empty(
+                    B, Hq, self._cpp_num_kv_splits, D + 1,
+                    dtype=torch.float32, device=query.device),
+                'output': torch.empty(
+                    B, Hq, D, dtype=query.dtype, device=query.device),
+            }
+        bufs = self._cpp_buffers[key]
+        mid_out = bufs['mid_out']
+        output = bufs['output']
+
+        torch.ops.fusencache.decode_attention(
+            output,
+            query,
+            kv_cache,
+            scales,
+            block_table,
+            seq_lens,
+            mid_out,
+            float(scale),
+            float(self.logits_soft_cap),
+            self._cpp_num_kv_splits,
+            D,                          # head_dim
+            Hk,                         # num_kv_heads
+            kv_group_size,
+            page_size,
+            self.spec.k_bits,           # k_bits
+            self.spec.v_bits,           # v_bits
+            self.spec.k_scale_block,    # scale_block_k
+            self.spec.v_scale_block,    # scale_block_v
+            float(self.spec.k_sym_offset),  # k_offset
+            float(self.spec.v_sym_offset),  # v_offset
+        )
+        return output
 
     def _pytorch_decode(self, query, kv_cache, scales, block_table, seq_lens):
         """PyTorch reference decode: dequantize from paged cache + attention.
@@ -616,7 +721,8 @@ class FusenKVImpl(AttentionImplBase):
                             max_slot, scales_cap, B,
                         )
 
-            attn_out = self.decode_fn(
+            _decode = self._cpp_decode if self._use_cpp_decode else self.decode_fn
+            attn_out = _decode(
                 q, kv_cache, layer._fusen_scales,
                 attn_metadata.block_table,
                 attn_metadata.seq_lens,
@@ -657,7 +763,8 @@ class FusenKVImpl(AttentionImplBase):
                 if dec_queries.ndim == 2:
                     dec_queries = dec_queries.reshape(n_dec, self.num_heads, self.head_size)
 
-                attn_out = self.decode_fn(
+                _decode = self._cpp_decode if self._use_cpp_decode else self.decode_fn
+                attn_out = _decode(
                     dec_queries, kv_cache, layer._fusen_scales,
                     attn_metadata.block_table[dec_idx],
                     attn_metadata.seq_lens[dec_idx],

@@ -1,14 +1,28 @@
 [build-system]
-requires = ["setuptools>=68.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "fusen-kv"
 version = "0.1.0"
-description = "Data-driven KV cache compression plugin for vLLM"
+description = "4x KV cache compression for vLLM via custom quantized attention"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
+authors = [
+    {name = "Chris Klaus"},
+]
+keywords = ["vllm", "kv-cache", "quantization", "attention", "gpu", "triton"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "torch>=2.1.0",
     "triton>=3.0.0",
@@ -20,5 +34,9 @@ vllm = ["vllm>=0.19.0"]
 [project.entry-points."vllm.general_plugins"]
 fusen_kv = "fusen_kv.plugin:register"
 
-[tool.setuptools.packages.find]
-include = ["fusen_kv*", "kv_cache_gen*"]
+[project.urls]
+Homepage = "https://github.com/autokernel/fusen-kv"
+Repository = "https://github.com/autokernel/fusen-kv"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fusen_kv"]
