@@ -27,7 +27,7 @@
 |---|-----------|--------|--------|--------|
 | 1 | **Real model validation** — load Neural Ice, generate text, run perplexity | Validates or invalidates everything | Minutes | **DONE** ✓ Gemma4 26B NVFP4 serving, coherent output, PPL=701.4 on WikiText-2 |
 | 2 | **Fused Triton MoE kernel** — single kernel for expert dispatch | 2-5x on 85% of decode (35ms→7-17ms) | Hours | Spec + bench done, kernel TODO |
-| 3 | **NVFP4 native tensor cores** — `torch._scaled_mm` with FP4 on SM120 | 1.5-2x on every matmul | Hours | **ACTIVE** — FlashInfer+Cutlass using NVFP4 GEMM, need to verify FP4 tensor core utilization |
+| 3 | **NVFP4 native tensor cores** — `torch._scaled_mm` with FP4 on SM120 | 1.5-2x on every matmul | Hours | **DONE** ✓ Verified: FLASHINFER_CUTLASS (linear) + VLLM_CUTLASS (MoE) both use CUTLASS 3.x SM120 FP4 MMA — real tensor cores, not emulation |
 | 4 | **vLLM end-to-end serving benchmark** — real tok/s under load | Ground truth for all claims | Minutes once build finishes | **DONE** ✓ 127 tok/s single, 2,071 tok/s peak at B=32, saturates at B=32 |
 | 5 | **CUDA graph full-model capture** — capture 30-layer decode as one graph | Eliminates ~750μs Python/launch overhead per step | Hours (vLLM integration) | **DONE** ✓ 7x speedup (18→127 tok/s), 86 graphs captured, 1 GiB graph memory |
 
@@ -106,8 +106,9 @@ DONE:       #1  Real model validation ✓ (PPL=701.4, coherent output)
             #5  CUDA graph capture ✓ (7x speedup, 86 graphs)
             #10 FP8 KV cache ✓ (2x capacity, but 4x slower — FlashInfer overhead)
 
+DONE:       #3  NVFP4 tensor core verification ✓ (CUTLASS 3.x SM120 FP4 MMA confirmed)
+
 NOW:        #2  Fused Triton MoE kernel (the 85% — biggest remaining win)
-            #3  NVFP4 tensor core verification (confirm FP4 path is active)
 
 SOON:       #9  Multi-GPU for PRO 6000 (when hardware arrives)
             #7  Per-layer KV spec (FusenCache k8v4/k4v4 — may beat FP8 KV)
