@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fusen-solver"
+version = "0.1.0"
+description = "Universal parallel AI problem solver for any coding platform"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    {name = "Chris Klaus"},
+]
+keywords = ["ai", "llm", "parallel", "coding", "solver", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "aiohttp>=3.9.0",
+]
+
+[project.optional-dependencies]
+# YAML config support
+yaml = ["pyyaml>=6.0"]
+# All backends (for users who want everything)
+all = [
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+fusen-solver = "fusen_solver.integrations.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/autokernel/fusen-solver"
+Repository = "https://github.com/autokernel/fusen-solver"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fusen_solver"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
