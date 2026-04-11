@@ -403,3 +403,13 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
 **Result:** C=1→32: ZERO errors, 25.6→253 tok/s. C++ bypasses both Triton JIT and FlashInfer concurrency bugs.
 **Status:** C++ kernel is now the preferred decode path (auto-enabled when .so exists).
 **Note:** Throughput at C=32 (253 tok/s) is lower than FusenCache eager (6,685 tok/s) — this is with inductor mode. Need to test with -cc.mode none for full throughput.
+
+## Discovery #49 (FINAL): FusenCache + CUDA graphs ceiling = C=8 (FlashInfer limit)
+**C++ kernel:** works perfectly C=1-32 with inductor, C=1-8 without inductor
+**The blocker:** FlashInfer sliding-window JIT crashes at C=16+ under no-inductor CUDA graphs
+**NOT our code:** The crash is in FlashInfer's 25 sliding-window attention layers, not FusenCache
+**Workaround:** Use FusenCache eager for batch (6,685 tok/s), C++ CUDA graphs for single-user (116 tok/s + 4x KV)
+**Definitive best configs:**
+  - Single-user + max KV: FusenCache + C++ + CUDA graphs = 116 tok/s, 165K tokens
+  - Batch throughput: FusenCache eager = 6,685 tok/s, 175K tokens  
+  - Batch without FusenCache: BF16 + no inductor + CUDA graphs = 6,615 tok/s, 43K tokens
