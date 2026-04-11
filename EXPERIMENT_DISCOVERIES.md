@@ -476,3 +476,11 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
 **Found:** torch.arange(), torch.searchsorted() inside forward() dynamically allocate GPU memory — incompatible with CUDA graph capture. Causes illegal instruction during graph replay.
 **Fix:** Reverted to UNIFORM_SINGLE_TOKEN_DECODE. Mixed prefill+decode runs eagerly (correct behavior).
 **Lesson:** CUDA graph capture requires ZERO dynamic allocations inside forward(). Even "pure tensor ops" like arange/searchsorted allocate temp buffers.
+
+## Discovery #58: All-C++ FusenCache still crashes with mode=none — SM120 large graph limit confirmed
+**Expected:** Writing both decode + store kernels in C++ (bypassing ALL Triton) would fix mode=none CUDA graph crash.
+**Found:** Still crashes at C=32 with `illegal instruction` — identical to Triton version.
+**Conclusion:** The crash is NOT Triton codegen. It's a fundamental SM120 limitation with large CUDA graphs (30-layer model forward captured as single graph). The graph replay infrastructure can't handle this complexity.
+**Proof:** All-C++ kernels (7/7 correctness tests, exact byte match) produce the same crash pattern.
+**Path forward:** Wait for CUDA driver fix from NVIDIA, or add piecewise CUDA graph support to vLLM without requiring torch.compile.
+**Working peak:** 4,489 tok/s with VLLM_COMPILE + piecewise graphs (stable C=1-128).
