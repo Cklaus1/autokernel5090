@@ -34,11 +34,12 @@ exec python3 /fusen/fusen_kv/launch_vllm.py \
   --model /models/gemma-4-26B-A4B-it-NVFP4-modelopt \
   --quantization modelopt \
   --max-model-len 4096 \
+  --max-num-seqs 64 \
   --trust-remote-code \
   --port 8001 \
   --kv-cache-dtype k4v4b64 \
   --no-async-scheduling \
   -cc.mode none \
   -cc.cudagraph_mode full \
-  -cc.cudagraph_capture_sizes '[1,2,4,8,16,24,32,48,64,96,128]' \
-  -cc.max_cudagraph_capture_size 256
+  -cc.cudagraph_capture_sizes '[1,2,4,8,16,24,32,48,64]' \
+  -cc.max_cudagraph_capture_size 64

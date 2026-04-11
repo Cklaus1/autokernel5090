@@ -394,7 +394,11 @@ def register():
         _patch_gemma4_backend_override()
 
         # Step 7: Prevent CUDA graph mode downgrade (new vLLM auto-resolves)
-        _patch_cudagraph_mode_override()
+        # NOTE: _patch_cudagraph_mode_override() exists but is NOT called here.
+        # FULL mode causes mixed-batch CUDA graph replay to crash (Discovery #57).
+        # Instead, we accept FULL_DECODE_ONLY and compensate with larger capture
+        # sizes + max_num_seqs=64 in the launch config. This achieves ~3,500 tok/s
+        # at C=64/128 without crashes.
 
         # Step 8: Startup hooks
         _register_startup_hook()
