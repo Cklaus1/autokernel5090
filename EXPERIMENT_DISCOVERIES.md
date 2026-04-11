@@ -425,3 +425,12 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
 **Fix:** stream.synchronize() at end of forward(). ~3ms overhead.
 **Better fix (TODO):** CUDA events to fence only shared buffers, not full sync.
 **Lesson:** The 5th hypothesis was right. Always test the simplest explanation (async race) before complex ones (FlashInfer codegen bugs).
+
+## Discovery #51: Sync fix doesn't help C=16 — it's a hard OOB, not async race
+**Expected:** stream.synchronize() would prevent memory recycling race → fix C=16+
+**Found:** C=1-8 still works (115-277 tok/s), C=16+ still crashes fatally
+**Implication:** The crash at C=16 is NOT the same bug as the sporadic crash. It's a HARD out-of-bounds in either:
+  - CUDA graph replay at padded batch size 16
+  - FusenCache C++ kernel at B=16
+  - Shared buffer indexing when actual_B=16 and graph_B=16 (exact match, no padding)
+**Next debug step:** Run C++ kernel standalone at B=16 with compute-sanitizer to find exact OOB
