@@ -413,3 +413,15 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
   - Single-user + max KV: FusenCache + C++ + CUDA graphs = 116 tok/s, 165K tokens
   - Batch throughput: FusenCache eager = 6,685 tok/s, 175K tokens  
   - Batch without FusenCache: BF16 + no inductor + CUDA graphs = 6,615 tok/s, 43K tokens
+
+## Discovery #50: Root cause = async CUDA memory recycling race condition
+**All previous hypotheses were WRONG:**
+  - Not FlashInfer JIT (wrong)
+  - Not mixed prefill+decode path (wrong)
+  - Not shared workspace buffer (wrong)
+  - Not FusenCache kernel bug (wrong)
+**Actual cause:** PyTorch CUDA allocator recycles freed temporary tensor memory while in-flight FusenKV decode kernels still read it. vLLM's async scheduling starts step N+1's preprocessing before step N's GPU kernels complete.
+**Proof:** CUDA_LAUNCH_BLOCKING=1 eliminates crash (forces sync).
+**Fix:** stream.synchronize() at end of forward(). ~3ms overhead.
+**Better fix (TODO):** CUDA events to fence only shared buffers, not full sync.
+**Lesson:** The 5th hypothesis was right. Always test the simplest explanation (async race) before complex ones (FlashInfer codegen bugs).

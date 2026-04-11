@@ -489,16 +489,11 @@ class FusenKVImpl(AttentionImplBase):
         kv_group_size = Hq // Hk
         page_size = kv_cache.shape[1]
 
-        # Adaptive split-K: match Triton behavior for SM utilization.
-        # At small B, use more splits; at large B, fewer splits.
-        # Capped at the pre-allocated buffer dimension.
-        from kv_cache_gen.generate import _optimal_splits
-        num_kv_splits = min(
-            self._cpp_num_kv_splits,
-            _optimal_splits(self._max_seq, B),
-        )
-        # Ensure at least 1 split
-        num_kv_splits = max(1, num_kv_splits)
+        # FIXED split count for CUDA graph compatibility:
+        # Use the same _cpp_num_kv_splits for ALL batch sizes. This matches
+        # the Triton path fix (shared buffers => fixed splits) and ensures
+        # the C++ kernel grid is consistent across all graph captures.
+        num_kv_splits = self._cpp_num_kv_splits
 
         # Shared buffers: same addresses for all graph capture sizes
         mid_out = self._cpp_shared_mid_out
@@ -899,5 +894,22 @@ class FusenKVImpl(AttentionImplBase):
                     logger.info("FUSEN_SYNC: mixed decode OK, attn_out.shape=%s", attn_out.shape)
 
                 output[dec_token_starts] = attn_out[:n_dec].to(output.dtype)
+
+        # CONCURRENCY FIX: Synchronize the CUDA stream to ensure all kernels
+        # (store + decode) complete before returning. Without this, vLLM's
+        # async scheduler may start the next step's tensor allocations while
+        # this step's GPU kernels are still running, causing the CUDA memory
+        # allocator to hand out memory that is still in use by in-flight
+        # kernels. This manifests as "illegal memory access" crashes at
+        # C=16+ concurrent requests.
+        #
+        # PERFORMANCE NOTE: This sync adds ~0.1ms overhead per layer per step.
+        # A more targeted fix would use CUDA events to fence only the shared
+        # decode buffers, but the sync is simpler and the overhead is
+        # negligible compared to the kernel execution time.
+        #
+        # SKIP during CUDA graph capture: .synchronize() would break capture.
+        if not torch.cuda.is_current_stream_capturing():
+            torch.cuda.current_stream().synchronize()
 
         return output
