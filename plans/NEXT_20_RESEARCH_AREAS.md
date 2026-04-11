@@ -409,3 +409,62 @@ The kernel-level work (custom CUTLASS, compiled FusenCache, structured sparsity)
 - **Multi-turn state management**: How efficiently does vLLM reuse KV across conversation turns? Is there a "conversation-aware" scheduling mode?
 - **Failure modes under load**: What happens at 100% KV utilization? Does vLLM degrade gracefully or cliff?
 - **Mixed-precision attention within a single head**: High-variance dims in BF16, low-variance in FP8, within the same head. Never explored at this granularity.
+
+---
+
+## Addendum: Novel Paths Beyond Known Techniques (Session 2)
+
+*Added after exhausting 75 of 116 known techniques and discovering 49 findings.*
+
+### Tier S: Quick Experiments That Could Change Everything
+
+| # | Idea | Gate Test | ASI Effort | If Works |
+|---|---|---|---|---|
+| N1 | **Expert output caching** — cache gate/up/down outputs for repeated code patterns, skip expert compute on cache hit | Profile expert output similarity on 1000 code prompts | 4 hours | Skip 30-60% of MoE compute |
+| N2 | **Mixed quantization per-expert** — hot experts in FP8, cold in NVFP4 (or vice versa) | Profile per-expert activation freq, test quality at mixed precision | 4 hours | Better quality on hot paths, same speed |
+| N3 | **Cross-request KV prefix deduplication** — not just prefix caching, but detect shared SUFFIXES and intermediate states | Measure KV similarity across 100 coding requests | 2 hours | 30-50% KV reduction for related requests |
+
+### Tier A: Medium Experiments with Novel Approaches
+
+| # | Idea | Gate Test | ASI Effort | If Works |
+|---|---|---|---|---|
+| N4 | **Structural code generation** — generate AST skeleton first, fill tokens second | Prototype: LLM generates JSON AST → template fills code | 1 day | More correct code, fewer syntax errors |
+| N5 | **Speculative EXECUTION** — run generated code in sandbox DURING generation, feed test results back to guide next tokens | Build sandbox + feedback loop prototype | 1 day | Self-correcting generation |
+| N6 | **CPU expert offload with async overlap** — cold experts run on CPU cores while hot experts run on GPU | Profile 32 CPU cores × expert matmul throughput | 4 hours | Free up GPU memory, maintain throughput |
+| N7 | **Router prediction across layers** — predict all 30 layers' expert routing from layer 0's router output | Measure cross-layer routing correlation | 2 hours | Skip 29 router computations |
+
+### Tier B: Research Bets
+
+| # | Idea | What it is | If Works |
+|---|---|---|---|
+| N8 | **Bidirectional function generation** | Generate function signature + return type first, body from both ends | 2x speed for function-body code |
+| N9 | **Attention pattern transfer** | Similar coding questions share attention patterns — reuse across requests | Major KV savings |
+| N10 | **Semantic token compression** | Common code patterns ("def __init__(self" = 1 token instead of 5) via custom tokenizer | 3-5x context efficiency |
+| N11 | **Continuous self-improvement** | Model fine-tunes on its own successful generations during idle GPU time | Quality improves over time |
+| N12 | **Memory-mapped expert weights** | mmap experts from NVMe, let OS page in on demand | Unlimited expert count |
+
+### Integration with Main Roadmap
+
+```
+THIS WEEK (before PRO 6000):
+  - Fix FlashInfer concurrency crash (Opus agents working)
+  - Gate test N1 (expert output caching similarity)
+  - Gate test N7 (router prediction correlation)
+
+NEXT WEEK (PRO 6000):
+  - DP=2 benchmark
+  - FusenDiffusion gate test (4 hours)
+  - Gate test N2 (mixed quantization)
+  - Gate test N6 (CPU expert offload)
+
+THIS MONTH:
+  - Build top 3 novel approaches that pass gate tests
+  - BCode integration Phase 1 (extract pipeline.ts)
+  - Train EAGLE3/DFlash draft for Gemma4 26B
+
+RESEARCH BACKLOG:
+  - Structural code generation (N4)
+  - Speculative execution (N5)
+  - Semantic token compression (N10)
+  - Continuous self-improvement (N11)
+```
