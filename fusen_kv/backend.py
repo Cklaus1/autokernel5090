@@ -362,6 +362,12 @@ class FusenKVImpl(AttentionImplBase):
         # that caused 10-120 GiB memory explosion with many capture sizes.
         #
         # Detect max batch size from vllm config, fall back to 512.
+        # CRITICAL: _max_B must be >= max(max_num_seqs, max_cudagraph_capture_size)
+        # to avoid OOB during CUDA graph capture (which pads batches up to
+        # max_cudagraph_capture_size) AND during eager fallback (which can
+        # send B up to max_num_seqs for decode, or max_num_batched_tokens
+        # for mixed prefill+decode -- the latter is handled by temp buffer
+        # allocation in make_decode_fn when B > _max_B).
         _max_B = 512
         try:
             from vllm.config import get_current_vllm_config
@@ -369,12 +375,15 @@ class FusenKVImpl(AttentionImplBase):
             if vllm_cfg and vllm_cfg.scheduler_config:
                 _max_B = vllm_cfg.scheduler_config.max_num_seqs
             if vllm_cfg and vllm_cfg.compilation_config:
-                # Use max CUDA graph capture size for shared buffer sizing.
-                # For batch sizes exceeding this (eager mode), the decode
-                # function falls back to temporary buffer allocation.
                 cg_max = vllm_cfg.compilation_config.max_cudagraph_capture_size
                 if cg_max and cg_max > 0:
-                    _max_B = cg_max
+                    # Use the LARGER of max_num_seqs and max_cudagraph_capture_size.
+                    # CUDA graphs pad batches up to cg_max, so shared buffers
+                    # must accommodate that. Previously this REPLACED _max_B
+                    # which was correct when cg_max >= max_num_seqs, but could
+                    # silently under-allocate if the config was read before
+                    # _set_cudagraph_sizes() finalized cg_max.
+                    _max_B = max(_max_B, cg_max)
         except Exception:
             pass
 

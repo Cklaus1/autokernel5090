@@ -446,7 +446,7 @@ def make_store_fn(spec: KVCacheSpec):
                 max_slots, Hk, num_sb, 2, dtype=torch.float16, device=key.device)
 
         _cpp_store_op(
-            k, v, kv_cache, layer._fc_scales, slot_mapping,
+            k, v, kv_cache, layer._fc_scales, slot_mapping.int(),
             D, block_size,
             spec.k_bits, spec.v_bits,
             spec.k_scale_block, spec.v_scale_block,
