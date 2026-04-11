@@ -38,7 +38,6 @@ exec python3 /fusen/fusen_kv/launch_vllm.py \
   --trust-remote-code \
   --port 8001 \
   --kv-cache-dtype k4v4b64 \
-  --no-async-scheduling \
   -cc.mode none \
   -cc.cudagraph_mode full \
   -cc.cudagraph_capture_sizes '[1,2,4,8,16,24,32,48,64]' \
