@@ -434,3 +434,9 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
   - FusenCache C++ kernel at B=16
   - Shared buffer indexing when actual_B=16 and graph_B=16 (exact match, no padding)
 **Next debug step:** Run C++ kernel standalone at B=16 with compute-sanitizer to find exact OOB
+
+## Discovery #52: C=16+ FIXED — two bugs: async race + buffer OOB
+**Bug 1 (async race):** vLLM async scheduling overlaps CPU input prep with GPU kernels. FusenCache kernels are slower → wider race window. Fix: --no-async-scheduling
+**Bug 2 (buffer OOB):** Shared buffers sized at max_graph=32, but eager fallback sends B>32. Fix: temporary buffer allocation for oversized batches.
+**Result:** ALL concurrency levels work. C=32: 1,496 tok/s. C=256: 1,345 tok/s.
+**Note:** Throughput peaks at C=32 (1,496) then plateaus. Lower than FusenCache eager (6,685) because --no-async-scheduling adds overhead. The async scheduling fix is a workaround — the proper fix is making FusenCache kernels fast enough that the race window closes naturally.

@@ -177,12 +177,22 @@ def make_decode_fn(spec: KVCacheSpec, block_kv=16, block_h=None,
         else:
             NUM_KV_SPLITS = _fixed_splits
 
-        if _use_shared:
+        if _use_shared and B <= _shared_mid.shape[0]:
             # Shared buffers: all CUDA graph captures use the SAME tensor
             # addresses. Pass full max-sized buffers — the kernel skips
             # padded entries where seq_lens=0 (zero output, no OOB).
             mid_out = _shared_mid
             output = _shared_out
+        elif _use_shared:
+            # Batch size exceeds shared buffer capacity (e.g., eager mode
+            # with B > max_cudagraph_capture_size). Allocate temporary
+            # buffers. This path is NOT CUDA-graph-safe but that's fine
+            # because we're already in eager mode (B > max_capture_size).
+            mid_out = torch.empty(B, _shared_mid.shape[1], NUM_KV_SPLITS,
+                                  _shared_mid.shape[3],
+                                  dtype=torch.float32, device=query.device)
+            output = torch.empty(B, _shared_out.shape[1], _shared_out.shape[2],
+                                 dtype=_shared_out.dtype, device=query.device)
         elif _persistent:
             bufs = _get_buffers(B, Hq, D, query.device, query.dtype)
             mid_out = bufs['mid_out']

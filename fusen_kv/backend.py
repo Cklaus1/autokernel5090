@@ -353,7 +353,9 @@ class FusenKVImpl(AttentionImplBase):
             if vllm_cfg and vllm_cfg.scheduler_config:
                 _max_B = vllm_cfg.scheduler_config.max_num_seqs
             if vllm_cfg and vllm_cfg.compilation_config:
-                # Use max CUDA graph capture size if available (tighter bound)
+                # Use max CUDA graph capture size for shared buffer sizing.
+                # For batch sizes exceeding this (eager mode), the decode
+                # function falls back to temporary buffer allocation.
                 cg_max = vllm_cfg.compilation_config.max_cudagraph_capture_size
                 if cg_max and cg_max > 0:
                     _max_B = cg_max
@@ -489,15 +491,31 @@ class FusenKVImpl(AttentionImplBase):
         kv_group_size = Hq // Hk
         page_size = kv_cache.shape[1]
 
-        # FIXED split count for CUDA graph compatibility:
-        # Use the same _cpp_num_kv_splits for ALL batch sizes. This matches
-        # the Triton path fix (shared buffers => fixed splits) and ensures
-        # the C++ kernel grid is consistent across all graph captures.
-        num_kv_splits = self._cpp_num_kv_splits
+        # Adaptive split-K: match Triton behavior for SM utilization.
+        # At small B, use more splits; at large B, fewer splits.
+        # Capped at the pre-allocated buffer dimension.
+        from kv_cache_gen.generate import _optimal_splits
+        num_kv_splits = min(
+            self._cpp_num_kv_splits,
+            _optimal_splits(self._max_seq, B),
+        )
+        # Ensure at least 1 split
+        num_kv_splits = max(1, num_kv_splits)
 
-        # Shared buffers: same addresses for all graph capture sizes
-        mid_out = self._cpp_shared_mid_out
-        output = self._cpp_shared_output
+        # Use shared buffers when B fits, otherwise allocate temporary buffers
+        # (eager mode with B > max_cudagraph_capture_size).
+        if B <= self._cpp_shared_mid_out.shape[0]:
+            mid_out = self._cpp_shared_mid_out
+            output = self._cpp_shared_output
+        else:
+            mid_out = torch.empty(
+                B, Hq, self._cpp_num_kv_splits, D + 1,
+                dtype=torch.float32, device=query.device,
+            )
+            output = torch.empty(
+                B, Hq, D,
+                dtype=self._cpp_shared_output.dtype, device=query.device,
+            )
 
         torch.ops.fusencache.decode_attention(
             output,
