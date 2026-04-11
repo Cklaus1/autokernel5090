@@ -128,17 +128,21 @@ class FusenKVMetadataBuilder(AttentionMetadataBuilder[FusenKVMetadata]):
     Implements the vLLM v1 AttentionMetadataBuilder interface.
     """
 
-    # CUDA graph support: decode-only batches (uniform single-token decode).
-    # Mixed prefill+decode runs eagerly (FULL_DECODE_ONLY mode).
+    # CUDA graph support: dynamic based on C++ kernel availability.
     #
-    # KNOWN ISSUE (SM120/Blackwell + Triton 3.6.0): CUDA graph replay of
-    # our Triton store/decode kernels crashes with "illegal instruction"
-    # when captured alongside the full 30-layer model forward (NVFP4 +
-    # MoE + 30-layer attention). The kernels work correctly in eager mode
-    # and in isolated CUDA graph tests. This appears to be a Triton
-    # codegen bug on SM120 that produces invalid SASS under high occupancy
-    # within large CUDA graphs. Use --enforce-eager as workaround.
-    _cudagraph_support = AttentionCGSupport.UNIFORM_SINGLE_TOKEN_DECODE
+    # On SM120/Blackwell + Triton 3.6.0, CUDA graph replay of Triton-generated
+    # store/decode kernels crashes with "illegal instruction". However, our C++
+    # CUDA kernels (fusencache_decode.so) don't have this issue.
+    #
+    # When BOTH C++ decode AND C++ store kernels are available:
+    #   -> UNIFORM_SINGLE_TOKEN_DECODE (full CUDA graphs for decode)
+    # Otherwise (Triton fallback):
+    #   -> NEVER (piecewise CUDA graphs only, attention runs in eager)
+    _cudagraph_support = (
+        AttentionCGSupport.UNIFORM_SINGLE_TOKEN_DECODE
+        if (_HAS_CPP_DECODE and _HAS_CPP_STORE)
+        else AttentionCGSupport.NEVER
+    )
     supports_update_block_table: bool = True
 
     def __init__(
@@ -388,13 +392,22 @@ class FusenKVImpl(AttentionImplBase):
             pass
 
         # Determine num_kv_splits for shared buffer allocation.
-        # CRITICAL: use B=1 (not _max_B) to get the MAXIMUM possible splits.
-        # The decode kernel uses adaptive splits that INCREASE at smaller B:
-        #   B=256 -> 1 split,  B=16 -> 16 splits,  B=1 -> up to 128 splits.
-        # The shared buffer must accommodate the worst case (B=1), otherwise
-        # mixed prefill+decode batches with small decode counts will OOB.
+        # The shared buffer dimension caps the maximum splits used at runtime.
+        # The decode kernel's adaptive split-K will never exceed this value.
+        #
+        # MEMORY BUDGET: With 30 layers, each buffer is:
+        #   [_max_B, num_heads, _num_kv_splits, head_size+1] * 4 bytes
+        # At _max_B=512, num_heads=16, head_size=256, 32 splits:
+        #   512*16*32*257*4 = 271 MB/layer * 30 = 8.1 GB (too much!)
+        # Capping at 8 splits: 67 MB/layer * 30 = 2.0 GB (fits)
+        #
+        # Split-K with 8 splits still provides good SM utilization for
+        # small batches (B=1..8 -> 8 splits -> 8 blocks per head group).
+        # For large batches (B=128+), adaptive splits returns 2-4 anyway.
         from kv_cache_gen.generate import _optimal_splits
-        _num_kv_splits = _optimal_splits(max_seq, 1)
+        _MAX_SHARED_SPLITS = 8  # Cap for memory -- saves ~7 GB on Gemma4
+        _num_kv_splits = min(_MAX_SHARED_SPLITS, _optimal_splits(max_seq, 1))
+        self._max_shared_splits = _num_kv_splits
 
         # Determine output dtype: match the model's compute dtype
         _out_dtype = torch.float16
@@ -447,6 +460,7 @@ class FusenKVImpl(AttentionImplBase):
             self.decode_fn = make_decode_fn(
                 self.spec,
                 block_kv=16, block_h=8, num_warps=2,
+                num_kv_splits=_num_kv_splits,
                 max_seq_len=max_seq,
                 max_batch_size=_max_B,
                 cuda_graph_safe=True,
@@ -458,6 +472,7 @@ class FusenKVImpl(AttentionImplBase):
             self.decode_fn = make_decode_fn(
                 self.spec,
                 block_kv=16, block_h=8, num_warps=2,
+                num_kv_splits=_num_kv_splits,
                 max_seq_len=max_seq,
                 max_batch_size=_max_B,
                 cuda_graph_safe=True,
@@ -466,7 +481,38 @@ class FusenKVImpl(AttentionImplBase):
                 shared_output=self._shared_output,
             )
 
-        self.store_fn = make_store_fn(self.spec)
+        self._triton_store_fn = make_store_fn(self.spec)
+        self._use_cpp_store = False
+        if _HAS_CPP_STORE and self.spec.k_bits == 4 and self.spec.v_bits == 4:
+            self._use_cpp_store = True
+            logger.info("FusenKV: using C++ store kernel (CUDA graph safe)")
+
+        _page_size = 16  # fixed page size for quantized cache
+
+        def _store_fn(key, value, kv_cache, slot_mapping, layer, num_kv_heads):
+            """Dispatch to C++ or Triton store kernel."""
+            if self._use_cpp_store:
+                D = key.shape[-1]
+                torch.ops.fusencache.store_kv(
+                    key,
+                    value,
+                    kv_cache,
+                    layer._fusen_scales,
+                    slot_mapping,
+                    D,                          # head_dim
+                    _page_size,                 # page_size
+                    self.spec.k_bits,
+                    self.spec.v_bits,
+                    self.spec.k_scale_block,
+                    self.spec.v_scale_block,
+                    float(self.spec.k_sym_offset),
+                    float(self.spec.v_sym_offset),
+                )
+            else:
+                self._triton_store_fn(key, value, kv_cache, slot_mapping,
+                                      layer, num_kv_heads)
+
+        self.store_fn = _store_fn
 
         # Scales tensor -- lazily allocated per layer
         self._scales_initialized = False

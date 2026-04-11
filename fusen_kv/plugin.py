@@ -233,6 +233,65 @@ def _patch_kv_cache_spec():
         logger.warning("FusenKV: kv_cache_spec patch failed: %s", e)
 
 
+def _patch_gemma4_backend_override():
+    """Patch Gemma4's verify_and_update_config to use CUSTOM backend for FusenKV.
+
+    New vLLM (0.1.dev100+) has a Gemma4Config.verify_and_update_config that
+    forces TRITON_ATTN backend for models with heterogeneous head dimensions
+    (head_dim=256, global_head_dim=512). This override runs during
+    VllmConfig.__init__ and sets attention_config.backend = TRITON_ATTN,
+    which completely bypasses FusenKV's backend selection patch.
+
+    The fix: wrap verify_and_update_config to set CUSTOM backend (instead of
+    TRITON_ATTN) when a FusenKV kv_cache_dtype is configured. FusenKV's
+    quantized attention kernels support all head sizes (64-512) natively.
+    """
+    try:
+        from vllm.model_executor.models.config import (
+            MODELS_CONFIG_MAP,
+        )
+
+        # Find the Gemma4 config class(es)
+        gemma4_keys = [k for k in MODELS_CONFIG_MAP
+                       if 'Gemma4' in k or 'gemma4' in k]
+        if not gemma4_keys:
+            logger.info("FusenKV: no Gemma4 config found, skipping backend override patch")
+            return
+
+        for key in gemma4_keys:
+            config_cls = MODELS_CONFIG_MAP[key]
+            original_verify = config_cls.verify_and_update_config
+
+            @staticmethod
+            def _patched_verify(vllm_config, _orig=original_verify):
+                # Check if FusenKV is configured via kv_cache_dtype
+                cache_dtype = getattr(vllm_config.cache_config, 'cache_dtype', None)
+                if cache_dtype in FUSEN_DTYPES:
+                    # FusenKV is configured -- set CUSTOM backend to prevent
+                    # the original verify from forcing TRITON_ATTN.
+                    # We must set this BEFORE calling the original verify,
+                    # because the original checks `backend is None`.
+                    from vllm.v1.attention.backends.registry import AttentionBackendEnum
+                    vllm_config.attention_config.backend = AttentionBackendEnum.CUSTOM
+                    logger.info(
+                        "FusenKV: set CUSTOM backend for Gemma4 "
+                        "(kv_cache_dtype=%s), overriding TRITON_ATTN forcing",
+                        cache_dtype,
+                    )
+                    # Still call original for any other config adjustments
+                    # (but it will now skip the backend override since
+                    # backend is no longer None)
+                    _orig(vllm_config)
+                else:
+                    _orig(vllm_config)
+
+            config_cls.verify_and_update_config = _patched_verify
+            logger.info("FusenKV: patched %s verify_and_update_config", key)
+
+    except Exception as e:
+        logger.warning("FusenKV: Gemma4 backend override patch failed: %s", e)
+
+
 def _register_startup_hook():
     """Register a warmup hook to precompile Triton kernels on first use.
 
@@ -280,7 +339,10 @@ def register():
         # Step 5: Patch KV cache spec for correct page sizing
         _patch_kv_cache_spec()
 
-        # Step 6: Startup hooks
+        # Step 6: Patch Gemma4 backend override (new vLLM forces TRITON_ATTN)
+        _patch_gemma4_backend_override()
+
+        # Step 7: Startup hooks
         _register_startup_hook()
 
         logger.info("FusenKV plugin v0.1.0 loaded successfully")
