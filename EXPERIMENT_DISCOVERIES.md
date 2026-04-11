@@ -396,3 +396,10 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
 **Primary suspect:** FlashInfer sliding-window attention JIT kernels (25/30 layers). SM120 JIT cubins may have a race condition or codegen bug under concurrent kernel dispatch.
 **FusenCache Triton decode:** NOT the cause (stable under sequential testing).
 **Next step:** Run concurrent load with CUDA_LAUNCH_BLOCKING in serving mode to catch the exact FlashInfer kernel.
+
+## Discovery #48: C++ decode kernel works at ALL concurrency — zero errors
+**Problem:** C++ kernel crashed at C≥8 (50% failures)
+**Root cause:** Double buffer allocation (Triton + C++ = 5.8 GiB). Fix: share buffers.
+**Result:** C=1→32: ZERO errors, 25.6→253 tok/s. C++ bypasses both Triton JIT and FlashInfer concurrency bugs.
+**Status:** C++ kernel is now the preferred decode path (auto-enabled when .so exists).
+**Note:** Throughput at C=32 (253 tok/s) is lower than FusenCache eager (6,685 tok/s) — this is with inductor mode. Need to test with -cc.mode none for full throughput.

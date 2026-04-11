@@ -337,6 +337,7 @@ class FusenKVImpl(AttentionImplBase):
         from kv_cache_gen.generate import make_decode_fn, make_store_fn
 
         max_seq = sliding_window if sliding_window else 131072
+        self._max_seq = max_seq
 
         # ---- Shared decode buffers (CUDA graph memory fix) ----
         # Pre-allocate ONE set of mid_out/output buffers at max_batch_size.
@@ -397,18 +398,22 @@ class FusenKVImpl(AttentionImplBase):
         self._use_cpp_decode = False
         if _HAS_CPP_DECODE and self.spec.k_bits == 4 and self.spec.v_bits == 4:
             self._use_cpp_decode = True
-            self._cpp_num_kv_splits = _auto_num_kv_splits(max_seq, _max_B)
-            # Shared buffers for C++ path too
-            self._cpp_shared_mid_out = torch.empty(
-                _max_B, num_heads, self._cpp_num_kv_splits, head_size + 1,
-                dtype=torch.float32, device='cuda',
-            )
-            self._cpp_shared_output = torch.empty(
-                _max_B, num_heads, head_size,
-                dtype=_out_dtype, device='cuda',
-            )
+            # CRITICAL: Use the SAME splits count and shared buffers as
+            # Triton (_num_kv_splits from _optimal_splits(max_seq, 1)).
+            # Previously, a separate _cpp_num_kv_splits from
+            # _auto_num_kv_splits(max_seq, _max_B) was used, which:
+            #   1. Allocated SEPARATE buffers (~1.2 GB wasted across layers)
+            #   2. Used too few splits (e.g. 8 vs 32), causing poor SM
+            #      utilization at high concurrency and OOM from memory
+            #      pressure of double-buffering.
+            # Now the C++ kernel reuses the already-allocated shared
+            # buffers and gets the same max split count.
+            self._cpp_num_kv_splits = _num_kv_splits
+            self._cpp_shared_mid_out = self._shared_mid_out
+            self._cpp_shared_output = self._shared_output
             logger.info(
-                "FusenKV: using C++ decode kernel (num_kv_splits=%d)",
+                "FusenKV: using C++ decode kernel (num_kv_splits=%d, "
+                "shared buffers with Triton fallback)",
                 self._cpp_num_kv_splits,
             )
             # Still build Triton as fallback (e.g. for non-k4v4 layers if mixed)
@@ -474,11 +479,26 @@ class FusenKVImpl(AttentionImplBase):
         Same signature as Triton decode_fn for drop-in replacement.
         Uses shared pre-allocated buffers so all CUDA graph capture sizes
         share the same tensor addresses (no per-graph memory explosion).
+
+        Uses adaptive num_kv_splits like the Triton path: more splits at
+        small batch (better SM utilization) capped at the pre-allocated
+        buffer size (_cpp_num_kv_splits).
         """
         B, Hq, D = query.shape
         Hk = num_kv_heads
         kv_group_size = Hq // Hk
         page_size = kv_cache.shape[1]
+
+        # Adaptive split-K: match Triton behavior for SM utilization.
+        # At small B, use more splits; at large B, fewer splits.
+        # Capped at the pre-allocated buffer dimension.
+        from kv_cache_gen.generate import _optimal_splits
+        num_kv_splits = min(
+            self._cpp_num_kv_splits,
+            _optimal_splits(self._max_seq, B),
+        )
+        # Ensure at least 1 split
+        num_kv_splits = max(1, num_kv_splits)
 
         # Shared buffers: same addresses for all graph capture sizes
         mid_out = self._cpp_shared_mid_out
@@ -494,7 +514,7 @@ class FusenKVImpl(AttentionImplBase):
             mid_out,
             float(scale),
             float(self.logits_soft_cap),
-            self._cpp_num_kv_splits,
+            num_kv_splits,
             D,                          # head_dim
             Hk,                         # num_kv_heads
             kv_group_size,
