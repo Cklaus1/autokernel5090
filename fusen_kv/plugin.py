@@ -292,6 +292,57 @@ def _patch_gemma4_backend_override():
         logger.warning("FusenKV: Gemma4 backend override patch failed: %s", e)
 
 
+def _patch_cudagraph_mode_override():
+    """Prevent vLLM from auto-downgrading CUDA graph mode for FusenCache.
+
+    New vLLM (0.1.dev100+) has resolve_cudagraph_mode_and_sizes() that checks
+    the attention backend's CG support level. FusenCache declares
+    UNIFORM_SINGLE_TOKEN_DECODE (not ALWAYS, because mixed-batch graph replay
+    crashes — Discovery #57). The resolver sees this and auto-downgrades
+    FULL → FULL_DECODE_ONLY.
+
+    FULL_DECODE_ONLY changes how the CudagraphDispatcher creates graph keys:
+    no keys for mixed batches, only decode-only. This changes scheduler
+    behavior and causes 3.4x throughput regression at C=128.
+
+    The fix: wrap resolve_cudagraph_mode_and_sizes() to restore the user's
+    requested mode. FusenCache handles the mixed→eager fallback correctly
+    at dispatch time (mixed batches won't match any FULL graph key, so they
+    naturally run eager). The difference is that FULL mode preserves the
+    scheduler's ability to optimize batch formation for high concurrency.
+    """
+    try:
+        from vllm.config.compilation import CompilationConfig, CUDAGraphMode
+
+        original_resolve = CompilationConfig.resolve_cudagraph_mode_and_sizes
+
+        def _patched_resolve(self, *args, **kwargs):
+            requested_mode = self.cudagraph_mode
+            result = original_resolve(self, *args, **kwargs)
+
+            # If user requested FULL but it was downgraded to FULL_DECODE_ONLY,
+            # restore FULL. The FusenCache backend handles mixed batches in
+            # eager mode naturally (no matching graph key → dispatch returns NONE).
+            if (
+                requested_mode == CUDAGraphMode.FULL
+                and result == CUDAGraphMode.FULL_DECODE_ONLY
+            ):
+                logger.info(
+                    "FusenKV: overriding cudagraph_mode from FULL_DECODE_ONLY "
+                    "back to FULL (FusenCache handles mixed→eager fallback)"
+                )
+                self.cudagraph_mode = CUDAGraphMode.FULL
+                return CUDAGraphMode.FULL
+
+            return result
+
+        CompilationConfig.resolve_cudagraph_mode_and_sizes = _patched_resolve
+        logger.info("FusenKV: patched resolve_cudagraph_mode_and_sizes")
+
+    except Exception as e:
+        logger.warning("FusenKV: cudagraph mode override patch failed: %s", e)
+
+
 def _register_startup_hook():
     """Register a warmup hook to precompile Triton kernels on first use.
 
@@ -342,7 +393,10 @@ def register():
         # Step 6: Patch Gemma4 backend override (new vLLM forces TRITON_ATTN)
         _patch_gemma4_backend_override()
 
-        # Step 7: Startup hooks
+        # Step 7: Prevent CUDA graph mode downgrade (new vLLM auto-resolves)
+        _patch_cudagraph_mode_override()
+
+        # Step 8: Startup hooks
         _register_startup_hook()
 
         logger.info("FusenKV plugin v0.1.0 loaded successfully")

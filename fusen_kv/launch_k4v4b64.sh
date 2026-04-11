@@ -40,5 +40,5 @@ exec python3 /fusen/fusen_kv/launch_vllm.py \
   --no-async-scheduling \
   -cc.mode none \
   -cc.cudagraph_mode full \
-  -cc.cudagraph_capture_sizes '[1,2,4,8,16,24,32]' \
-  -cc.max_cudagraph_capture_size 32
+  -cc.cudagraph_capture_sizes '[1,2,4,8,16,24,32,48,64,96,128]' \
+  -cc.max_cudagraph_capture_size 256

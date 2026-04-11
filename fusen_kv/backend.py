@@ -135,7 +135,17 @@ class FusenKVMetadataBuilder(AttentionMetadataBuilder[FusenKVMetadata]):
     # CUDA kernels (fusencache_decode.so) don't have this issue.
     #
     # When BOTH C++ decode AND C++ store kernels are available:
-    #   -> UNIFORM_SINGLE_TOKEN_DECODE (full CUDA graphs for decode)
+    #   -> UNIFORM_SINGLE_TOKEN_DECODE (full CUDA graphs for decode-only)
+    #
+    #   NOTE: ALWAYS was tested and crashes during mixed prefill+decode graph
+    #   replay (Discovery #57). The universal decode path logic is graph-safe
+    #   but something in the C++ kernel or vLLM's graph replay corrupts state.
+    #
+    #   CRITICAL: new vLLM (0.1.dev100+) auto-downgrades FULL → FULL_DECODE_ONLY
+    #   when backend declares < ALWAYS. This changes scheduler behavior and
+    #   causes 3.4x throughput regression at C=128. The fix is in plugin.py:
+    #   _patch_cudagraph_mode_override() restores FULL mode after resolution.
+    #
     # Otherwise (Triton fallback):
     #   -> NEVER (piecewise CUDA graphs only, attention runs in eager)
     _cudagraph_support = (
@@ -498,7 +508,7 @@ class FusenKVImpl(AttentionImplBase):
                     value,
                     kv_cache,
                     layer._fusen_scales,
-                    slot_mapping,
+                    slot_mapping.int(),
                     D,                          # head_dim
                     _page_size,                 # page_size
                     self.spec.k_bits,
