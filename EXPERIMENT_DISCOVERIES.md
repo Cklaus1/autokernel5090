@@ -389,3 +389,10 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
 **Root cause:** `_optimal_splits(max_seq, max_B=256)` = 1 split, but at B=6 (mixed batch decode portion), kernel needs 32 splits → 32x buffer overflow on split dimension
 **Fix:** Allocate at `_optimal_splits(max_seq, B=1)` = 32 splits (maximum possible)
 **Result:** Buffer overflow fixed. But sporadic CUDA crashes remain (Triton/SM120 issue, affects all concurrency levels including C=1, unrelated to FusenCache).
+
+## Discovery #47: Sporadic crash is FlashInfer JIT under concurrency, not FusenCache
+**Debug method:** CUDA_LAUNCH_BLOCKING=1 with sequential requests → 40+ requests, zero crashes
+**Finding:** Crash only manifests under concurrent serving. Sequential is rock-solid.
+**Primary suspect:** FlashInfer sliding-window attention JIT kernels (25/30 layers). SM120 JIT cubins may have a race condition or codegen bug under concurrent kernel dispatch.
+**FusenCache Triton decode:** NOT the cause (stable under sequential testing).
+**Next step:** Run concurrent load with CUDA_LAUNCH_BLOCKING in serving mode to catch the exact FlashInfer kernel.
