@@ -32,17 +32,25 @@ def _can_sync():
 # Falls back to Triton if the .so is not available.
 _FUSENCACHE_CPP_SO = "/tmp/build_fusencache/fusencache_decode.so"
 _HAS_CPP_DECODE = False
+_HAS_CPP_STORE = False
 try:
     if os.path.exists(_FUSENCACHE_CPP_SO):
         torch.ops.load_library(_FUSENCACHE_CPP_SO)
-        # Verify the op is registered
+        # Verify the ops are registered
         _ = torch.ops.fusencache.decode_attention
         _HAS_CPP_DECODE = True
         logging.getLogger(__name__).info(
             "FusenCache C++ decode kernel loaded from %s", _FUSENCACHE_CPP_SO)
+    try:
+        _ = torch.ops.fusencache.store_kv
+        _HAS_CPP_STORE = True
+        logging.getLogger(__name__).info(
+            "FusenCache C++ store kernel loaded (CUDA graph safe)")
+    except AttributeError:
+        pass
 except Exception as e:
     logging.getLogger(__name__).warning(
-        "FusenCache C++ decode kernel not available, falling back to Triton: %s", e)
+        "FusenCache C++ kernels not available, falling back to Triton: %s", e)
     _HAS_CPP_DECODE = False
 
 from vllm.v1.attention.backend import (

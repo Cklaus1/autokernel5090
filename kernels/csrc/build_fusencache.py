@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Build the FusenCache decode attention CUDA kernel and register as torch op.
+Build the FusenCache CUDA kernels and register as torch ops.
 
 Usage:
     python3 kernels/csrc/build_fusencache.py
 
 Produces: /tmp/build_fusencache/fusencache_decode.so
-Registers: torch.ops.fusencache.decode_attention
+Registers:
+    torch.ops.fusencache.decode_attention
+    torch.ops.fusencache.store_kv
 """
 
 import os
@@ -15,7 +17,8 @@ import subprocess
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-KERNEL_SRC = os.path.join(SCRIPT_DIR, "fusencache_decode_attention.cu")
+KERNEL_DECODE_SRC = os.path.join(SCRIPT_DIR, "fusencache_decode_attention.cu")
+KERNEL_STORE_SRC = os.path.join(SCRIPT_DIR, "fusencache_store_kv.cu")
 BUILD_DIR = "/tmp/build_fusencache"
 SO_PATH = os.path.join(BUILD_DIR, "fusencache_decode.so")
 
@@ -101,6 +104,21 @@ void fusencache_decode_attention(
     double k_offset,
     double v_offset);
 
+void fusencache_store_kv(
+    torch::Tensor const& key,
+    torch::Tensor const& value,
+    torch::Tensor& kv_cache,
+    torch::Tensor& scales,
+    torch::Tensor const& slot_mapping,
+    int64_t head_dim,
+    int64_t page_size,
+    int64_t k_bits,
+    int64_t v_bits,
+    int64_t k_scale_block,
+    int64_t v_scale_block,
+    double k_offset,
+    double v_offset);
+
 TORCH_LIBRARY(fusencache, ops) {
     ops.def(
         "decode_attention(Tensor! output, Tensor query, Tensor kv_cache, "
@@ -112,11 +130,20 @@ TORCH_LIBRARY(fusencache, ops) {
         "float k_offset, float v_offset) -> ()");
     ops.impl("decode_attention", torch::kCUDA,
              &fusencache_decode_attention);
+
+    ops.def(
+        "store_kv(Tensor key, Tensor value, Tensor! kv_cache, "
+        "Tensor! scales, Tensor slot_mapping, "
+        "int head_dim, int page_size, "
+        "int k_bits, int v_bits, int k_scale_block, int v_scale_block, "
+        "float k_offset, float v_offset) -> ()");
+    ops.impl("store_kv", torch::kCUDA,
+             &fusencache_store_kv);
 }
 ''')
 
-    # Step 1: Compile CUDA kernel
-    nvcc_cmd = [
+    # Common nvcc flags
+    nvcc_common = [
         NVCC,
         "-ccbin", GCC,
         *includes,
@@ -128,16 +155,33 @@ TORCH_LIBRARY(fusencache, ops) {
         "--compiler-options", "-fPIC",
         arch_flag,
         "-O3", "--use_fast_math", "-std=c++17",
-        "-c", KERNEL_SRC,
-        "-o", os.path.join(BUILD_DIR, "kernel.o"),
     ]
-    print("[BUILD] Compiling CUDA kernel...")
+
+    # Step 1a: Compile decode attention CUDA kernel
+    nvcc_cmd = nvcc_common + [
+        "-c", KERNEL_DECODE_SRC,
+        "-o", os.path.join(BUILD_DIR, "kernel_decode.o"),
+    ]
+    print("[BUILD] Compiling decode attention CUDA kernel...")
     r = subprocess.run(nvcc_cmd, capture_output=True, text=True)
     if r.returncode != 0:
         print(f"STDOUT:\n{r.stdout}")
         print(f"STDERR:\n{r.stderr}")
         sys.exit(1)
-    print("[BUILD] CUDA kernel compiled OK")
+    print("[BUILD] Decode attention kernel compiled OK")
+
+    # Step 1b: Compile store KV CUDA kernel
+    nvcc_cmd_store = nvcc_common + [
+        "-c", KERNEL_STORE_SRC,
+        "-o", os.path.join(BUILD_DIR, "kernel_store.o"),
+    ]
+    print("[BUILD] Compiling store KV CUDA kernel...")
+    r = subprocess.run(nvcc_cmd_store, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"STDOUT:\n{r.stdout}")
+        print(f"STDERR:\n{r.stderr}")
+        sys.exit(1)
+    print("[BUILD] Store KV kernel compiled OK")
 
     # Step 2: Compile C++ wrapper
     cxx_cmd = [
@@ -158,7 +202,8 @@ TORCH_LIBRARY(fusencache, ops) {
     torch_lib = os.path.join(torch_dir, "lib")
     link_cmd = [
         GCC, "-shared",
-        os.path.join(BUILD_DIR, "kernel.o"),
+        os.path.join(BUILD_DIR, "kernel_decode.o"),
+        os.path.join(BUILD_DIR, "kernel_store.o"),
         os.path.join(BUILD_DIR, "wrapper.o"),
         f"-L{torch_lib}",
         "-ltorch", "-ltorch_cpu", "-ltorch_cuda", "-lc10", "-lc10_cuda",
@@ -189,7 +234,7 @@ def load_library():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("FusenCache Decode Attention CUDA Kernel Builder")
+    print("FusenCache CUDA Kernel Builder (decode + store)")
     print("=" * 60)
 
     so_path = build_kernel()
@@ -198,5 +243,6 @@ if __name__ == "__main__":
     print("BUILD COMPLETE")
     print("=" * 60)
     print(f"\nShared library: {so_path}")
-    print("\nAvailable op:")
+    print("\nAvailable ops:")
     print("  torch.ops.fusencache.decode_attention")
+    print("  torch.ops.fusencache.store_kv")

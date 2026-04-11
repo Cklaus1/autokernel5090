@@ -405,11 +405,61 @@ def make_store_fn(spec: KVCacheSpec):
             num_warps=4,
         )
 
+    # Try to use the C++ CUDA store kernel (CUDA graph safe, no Triton)
+    _use_cpp_store = False
+    try:
+        import os as _os
+        _so_path = "/tmp/build_fusencache/fusencache_decode.so"
+        if _os.path.exists(_so_path):
+            torch.ops.load_library(_so_path)
+        _cpp_store_op = torch.ops.fusencache.store_kv
+        _use_cpp_store = True
+    except Exception:
+        pass
+
+    def _store_cpp(key, value, kv_cache, slot_mapping, layer, num_kv_heads):
+        """C++ CUDA store: CUDA graph safe, no Triton dependency."""
+        N = slot_mapping.shape[0]
+        if N <= 0:
+            return
+
+        D = key.shape[-1]
+        Hk = num_kv_heads
+        block_size = kv_cache.shape[1]
+
+        k = key[:N]
+        v = value[:N]
+        if k.ndim == 2:
+            k = k.reshape(N, Hk, D)
+            v = v.reshape(N, Hk, D)
+
+        k = k.contiguous()
+        v = v.contiguous()
+
+        # Allocate scales tensor if needed
+        min_block = min(spec.k_scale_block, spec.v_scale_block)
+        num_sb = D // min_block
+        num_blocks_total = kv_cache.shape[0]
+        max_slots = num_blocks_total * block_size
+        if not hasattr(layer, '_fc_scales'):
+            layer._fc_scales = torch.zeros(
+                max_slots, Hk, num_sb, 2, dtype=torch.float16, device=key.device)
+
+        _cpp_store_op(
+            k, v, kv_cache, layer._fc_scales, slot_mapping,
+            D, block_size,
+            spec.k_bits, spec.v_bits,
+            spec.k_scale_block, spec.v_scale_block,
+            spec.k_sym_offset, spec.v_sym_offset,
+        )
+
     # Async store: run on a dedicated CUDA stream to overlap with next layer's compute
     _store_stream = None
 
     def store(key, value, kv_cache, slot_mapping, layer, num_kv_heads):
-        if _use_triton:
+        if _use_cpp_store:
+            _store_cpp(key, value, kv_cache, slot_mapping, layer, num_kv_heads)
+        elif _use_triton:
             _store_triton(key, value, kv_cache, slot_mapping, layer, num_kv_heads)
         else:
             _store_pytorch(key, value, kv_cache, slot_mapping, layer, num_kv_heads)
