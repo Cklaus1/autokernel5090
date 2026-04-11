@@ -447,3 +447,11 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
 **What doesn't:** vLLM's model-level tensors (input_ids, positions) are modified by CPU during CUDA graph replay — can't be cloned from attention backend plugin
 **Final answer:** Use --no-async-scheduling with CUDA graphs. Peak: 1,804 tok/s at C=32 with 4x KV.
 **To truly fix:** Would need a vLLM core patch to clone model inputs before graph replay. That's an upstream contribution, not a plugin fix.
+
+## Discovery #54: vLLM async scheduling race FIXED at core level
+**Previous:** Discovery #53 said async race is unfixable from plugin. --no-async-scheduling was the only workaround.
+**Root cause:** synchronize_input_prep() records CUDA event after input prep but BEFORE model forward. Next step syncs on this event → can start modifying GPU buffers while CUDA graph replay still reads them. FlashAttention finishes fast enough; slower backends (FusenCache) widen the race window.
+**Fix:** 3 lines in gpu_model_runner.py — add `_forward_done_event = torch.cuda.Event()`, record after `_model_forward()`, wait via `stream.wait_event()` in `synchronize_input_prep()`. Uses stream-level waiting (not CPU sync) to preserve async CPU/GPU overlap.
+**Result:** FusenCache k4v4b64 + async scheduling + CUDA graphs: C=1→128, ZERO crashes, 3,176 tok/s at C=128.
+**Key insight:** stream.wait_event() is better than event.synchronize() — it only blocks the GPU stream, not the CPU thread, preserving async scheduling's CPU prep overlap benefit.
+**File:** patches/vllm_async_scheduling_fix.py (source patch + monkey-patch variants)

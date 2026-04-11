@@ -120,9 +120,13 @@ class FusenKVMetadataBuilder(AttentionMetadataBuilder[FusenKVMetadata]):
     Implements the vLLM v1 AttentionMetadataBuilder interface.
     """
 
-    # CUDA graph support: we support uniform single-token decode batches.
-    # Mixed prefill+decode requires dynamic shapes (no graph).
-    _cudagraph_support = AttentionCGSupport.UNIFORM_SINGLE_TOKEN_DECODE
+    # CUDA graph support: ALWAYS — we support full CUDA graph capture for
+    # ALL batch types (decode-only, mixed prefill+decode, pure prefill).
+    # The mixed path uses the "universal decode" approach: every token is
+    # treated as a separate decode request with per-token pseudo-seq_lens
+    # computed from query_start_loc. This avoids Python loops and .item()
+    # calls, making the forward() fully graph-safe.
+    _cudagraph_support = AttentionCGSupport.ALWAYS
     supports_update_block_table: bool = True
 
     def __init__(
@@ -468,6 +472,7 @@ class FusenKVImpl(AttentionImplBase):
         self._prev_block_table = None
         self._prev_seq_lens = None
         self._prev_slot_mapping = None
+        self._prev_query_start_loc = None
 
         logger.info(
             "FusenKV layer: heads=%d, head_size=%d, kv_heads=%d, "
@@ -788,6 +793,7 @@ class FusenKVImpl(AttentionImplBase):
             _block_table = attn_metadata.block_table.clone() if attn_metadata.block_table is not None else None
             _seq_lens = attn_metadata.seq_lens.clone() if attn_metadata.seq_lens is not None else None
             _slot_mapping = attn_metadata.slot_mapping.clone() if attn_metadata.slot_mapping is not None else None
+            _query_start_loc = attn_metadata.query_start_loc.clone() if attn_metadata.query_start_loc is not None else None
 
             # Retain references to clones so Python GC doesn't free them while
             # the GPU is still reading them. The previous step's clones are now
@@ -795,11 +801,13 @@ class FusenKVImpl(AttentionImplBase):
             self._prev_block_table = _block_table
             self._prev_seq_lens = _seq_lens
             self._prev_slot_mapping = _slot_mapping
+            self._prev_query_start_loc = _query_start_loc
         else:
             # During CUDA graph capture: use originals (fixed addresses required)
             _block_table = attn_metadata.block_table
             _seq_lens = attn_metadata.seq_lens
             _slot_mapping = attn_metadata.slot_mapping
+            _query_start_loc = attn_metadata.query_start_loc
 
         self._ensure_scales(layer, kv_cache, query.device)
 
@@ -814,22 +822,15 @@ class FusenKVImpl(AttentionImplBase):
         is_decode_only = (attn_metadata.max_query_len == 1)
 
         # ---- Store K/V into quantized cache ----
-        # For decode-only under CUDA graphs: use full tensors (no dynamic
-        # slicing). Padded slot_mapping entries are -1 and the store kernel
-        # skips them (slot < 0 guard). For mixed prefill+decode (eager): use
-        # num_actual_tokens to avoid storing garbage from padding positions.
+        # CUDA graph safe: ALWAYS use full tensors (no dynamic slicing).
+        # Padded slot_mapping entries are -1 and the store kernel skips
+        # them (slot < 0 guard). This ensures identical tensor shapes
+        # during graph capture and replay for ALL batch types.
         if _slot_mapping is not None and key is not None:
-            if is_decode_only:
-                # Full tensor — safe because padded slots are -1
-                self.store_fn(
-                    key, value, kv_cache,
-                    _slot_mapping, layer, self.num_kv_heads,
-                )
-            else:
-                self.store_fn(
-                    key[:num_tokens], value[:num_tokens], kv_cache,
-                    _slot_mapping[:num_tokens], layer, self.num_kv_heads,
-                )
+            self.store_fn(
+                key, value, kv_cache,
+                _slot_mapping, layer, self.num_kv_heads,
+            )
             if _can_sync():
                 torch.cuda.synchronize()
                 logger.info("FUSEN_SYNC: store OK, is_decode=%s, B=%d, num_tokens=%d",
@@ -893,95 +894,91 @@ class FusenKVImpl(AttentionImplBase):
                 torch.cuda.synchronize()
                 logger.info("FUSEN_SYNC: decode OK, padded_B=%d, B=%d", padded_B, B)
         else:
-            # ---- Mixed prefill+decode or pure prefill ----
-            qsl = attn_metadata.query_start_loc
+            # ---- Mixed prefill+decode or pure prefill (CUDA graph safe) ----
+            #
+            # "Universal decode" approach: treat EVERY query token as a
+            # separate decode request against the KV cache. After storing
+            # K/V (above), the cache has all tokens. Each query token at
+            # position p within request i should causally attend to KV
+            # positions 0..(context_before_prefill + p). We compute
+            # per-token pseudo-seq_lens and per-token block_table using
+            # pure tensor ops (no Python loops, no .item() calls).
+            #
+            # This makes the mixed path fully CUDA-graph-safe, enabling
+            # AttentionCGSupport.ALWAYS.
+            qsl = _query_start_loc
+            padded_T = query.shape[0]  # padded num_tokens (graph-fixed shape)
+
+            # Compute per-token request assignment: which request owns each token
+            # query_start_loc is [num_reqs+1] (or [padded_num_reqs+1])
+            # Use searchsorted: for token t, find i such that qsl[i] <= t < qsl[i+1]
+            token_positions = torch.arange(
+                padded_T, device=query.device, dtype=qsl.dtype)
+            # searchsorted with right=True: returns index of first element
+            # strictly greater than the value. For qsl_right = qsl[1:],
+            # this gives the request index that owns each token.
+            qsl_right = qsl[1:]  # [num_reqs] or [padded_reqs]
+            token_request_ids = torch.searchsorted(
+                qsl_right, token_positions, right=True)
+            # Clamp to valid request range (padded tokens get last request id
+            # but their seq_lens will be 0, producing zero output)
+            max_req_idx = qsl_right.shape[0] - 1
+            token_request_ids = token_request_ids.clamp(max=max_req_idx)
+
+            # Per-request query lengths: qsl[i+1] - qsl[i]
+            query_lens = qsl_right - qsl[:qsl_right.shape[0]]  # [num_reqs]
+
+            # Position of each token within its request (0-indexed)
+            position_in_request = token_positions - qsl[token_request_ids]
+
+            # Per-token pseudo seq_lens for causal attention:
+            # token at position p in request i should see:
+            #   (seq_lens[i] - query_lens[i]) + (p + 1)
+            # = context_len_before_this_batch + position_in_prefill + 1
+            per_req_seq = _seq_lens[token_request_ids]
+            per_req_qlen = query_lens[token_request_ids]
+            pseudo_seq_lens = per_req_seq - per_req_qlen + position_in_request + 1
+            # Clamp: must be >= 0 and must not exceed the request's total
+            # seq_len. The min(pseudo, per_req_seq) ensures padded tokens
+            # (where seq_lens=0 and query_lens=0 but position > 0) get
+            # pseudo_seq_lens=0, preventing reads from invalid block_table
+            # entries. The decode kernel handles seq_lens=0 safely
+            # (split_start >= split_end early return + zero output).
+            pseudo_seq_lens = pseudo_seq_lens.clamp(min=0)
+            pseudo_seq_lens = torch.min(pseudo_seq_lens, per_req_seq)
+
+            # Per-token block table: expand from [num_reqs, max_blocks] to
+            # [padded_T, max_blocks] by indexing with token_request_ids
+            token_block_table = _block_table[token_request_ids]
+
+            # Reshape query for decode kernel: [padded_T, H, D]
+            q = query
+            if q.ndim == 2:
+                q = q.reshape(padded_T, self.num_heads, self.head_size)
+            q = q.contiguous()
+
             if _can_sync():
                 logger.info(
-                    "FUSEN_SYNC: mixed path B=%d, num_tokens=%d, max_query_len=%d, "
-                    "qsl.shape=%s, query.shape=%s, key.shape=%s, output.shape=%s, "
-                    "block_table.shape=%s, seq_lens.shape=%s, kv_cache.shape=%s, "
-                    "scales.shape=%s",
-                    B, num_tokens, attn_metadata.max_query_len,
-                    qsl.shape, query.shape, key.shape, output.shape,
-                    _block_table.shape if _block_table is not None else None,
-                    _seq_lens.shape if _seq_lens is not None else None,
-                    kv_cache.shape,
-                    layer._fusen_scales.shape,
-                )
-            decode_indices = []
-            for i in range(B):
-                q_start = qsl[i].item()
-                q_end = qsl[i + 1].item() if (i + 1) < qsl.shape[0] else num_tokens
-                q_len = q_end - q_start
-
-                if q_len > 1:
-                    # Prefill: use manual attention (supports soft_cap)
-                    if _can_sync():
-                        logger.info("FUSEN_SYNC: prefill req %d, q_start=%d, q_end=%d, q_len=%d",
-                                    i, q_start, q_end, q_len)
-                    prefill_out = self._prefill_with_sliding_window(
-                        query[q_start:q_end],
-                        key[q_start:q_end],
-                        value[q_start:q_end],
-                        q_len,
-                    )
-                    if _can_sync():
-                        torch.cuda.synchronize()
-                        logger.info("FUSEN_SYNC: prefill req %d OK, prefill_out.shape=%s",
-                                    i, prefill_out.shape)
-                    # prefill_out is [n, Hq*D], reshape to [n, Hq, D]
-                    output[q_start:q_end] = prefill_out.reshape(
-                        q_len, self.num_heads, self.head_size).to(output.dtype)
-                else:
-                    decode_indices.append(i)
-
-            if decode_indices:
-                # Batch decode for all 1-token requests
-                n_dec = len(decode_indices)
-                dec_idx = torch.tensor(decode_indices, device=query.device)
-                dec_token_starts = qsl[dec_idx]
-
-                dec_queries = query[dec_token_starts].contiguous()
-                if dec_queries.ndim == 2:
-                    dec_queries = dec_queries.reshape(n_dec, self.num_heads, self.head_size)
-
-                dec_block_table = _block_table[dec_idx]
-                dec_seq_lens = _seq_lens[dec_idx]
-
-                if _can_sync():
-                    logger.info(
-                        "FUSEN_SYNC: mixed decode n_dec=%d, dec_idx=%s, "
-                        "dec_token_starts=%s, dec_queries.shape=%s, "
-                        "dec_block_table.shape=%s, dec_seq_lens=%s, "
-                        "kv_cache.shape=%s, scales.shape=%s",
-                        n_dec, dec_idx.tolist(), dec_token_starts.tolist(),
-                        dec_queries.shape, dec_block_table.shape,
-                        dec_seq_lens.tolist(), kv_cache.shape,
-                        layer._fusen_scales.shape,
-                    )
-                    # Check for OOB block_table entries
-                    num_blocks = kv_cache.shape[0]
-                    active = dec_seq_lens > 0
-                    if active.any():
-                        max_blk = dec_block_table[active].max().item()
-                        if max_blk >= num_blocks:
-                            logger.error(
-                                "FUSEN_SYNC: MIXED DECODE block_table OOB! "
-                                "max_block=%d >= num_blocks=%d", max_blk, num_blocks)
-
-                _decode = self._cpp_decode if self._use_cpp_decode else self.decode_fn
-                attn_out = _decode(
-                    dec_queries, kv_cache, layer._fusen_scales,
-                    dec_block_table,
-                    dec_seq_lens,
-                    self.scale, self.num_kv_heads,
+                    "FUSEN_SYNC: universal decode path padded_T=%d, B=%d, "
+                    "num_tokens=%d, max_query_len=%d",
+                    padded_T, B, num_tokens, attn_metadata.max_query_len,
                 )
 
-                if _can_sync():
-                    torch.cuda.synchronize()
-                    logger.info("FUSEN_SYNC: mixed decode OK, attn_out.shape=%s", attn_out.shape)
+            # Run decode kernel on ALL tokens (both prefill and decode)
+            # The kernel reads from the quantized KV cache for each token,
+            # using pseudo_seq_lens for causal masking.
+            _decode = self._cpp_decode if self._use_cpp_decode else self.decode_fn
+            attn_out = _decode(
+                q, kv_cache, layer._fusen_scales,
+                token_block_table,
+                pseudo_seq_lens,
+                self.scale, self.num_kv_heads,
+            )
 
-                output[dec_token_starts] = attn_out[:n_dec].to(output.dtype)
+            output[:padded_T] = attn_out[:padded_T].to(output.dtype)
+            if _can_sync():
+                torch.cuda.synchronize()
+                logger.info("FUSEN_SYNC: universal decode OK, padded_T=%d", padded_T)
 
         # STREAM FENCE: Record a CUDA event after all kernels (store + decode)
         # so the NEXT forward() call can wait for them via wait_event().
