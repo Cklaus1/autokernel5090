@@ -1,9 +1,10 @@
 # Experiment Discoveries — Gemma4 26B NVFP4 on RTX 5090
 
-**Session:** April 9-10, 2026
+**Session:** April 9-11, 2026
 **Model:** Gemma4 26B-A4B-it NVFP4 (128 experts, top-8, 30 layers)
 **Hardware:** RTX 5090 (Blackwell SM120, 32GB, 1792 GB/s)
-**Peak throughput achieved:** 6,685 tok/s (FusenCache eager)
+**Peak throughput achieved:** 4,489 tok/s (FusenCache k4v4 + async fix + VLLM_COMPILE, C=128)
+**Previous peak:** 6,685 tok/s (FusenCache eager, older vLLM — no longer reproducible due to SM120 CUDA graph limits)
 
 ---
 
@@ -455,3 +456,23 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
 **Result:** FusenCache k4v4b64 + async scheduling + CUDA graphs: C=1→128, ZERO crashes, 3,176 tok/s at C=128.
 **Key insight:** stream.wait_event() is better than event.synchronize() — it only blocks the GPU stream, not the CPU thread, preserving async scheduling's CPU prep overlap benefit.
 **File:** patches/vllm_async_scheduling_fix.py (source patch + monkey-patch variants)
+
+## Discovery #55: Per-layer synchronize() was costing 3ms/step — 69% throughput boost by removing it
+**Previous:** 2,657 tok/s at C=128 with async scheduling fix
+**Found:** `torch.cuda.current_stream().synchronize()` at end of FusenCache forward() was blocking CPU 30x/step (~100μs each = 3ms total). The event fence `_prev_step_event` already provides sufficient GPU-side ordering.
+**Fix:** Remove the synchronize(), keep the event fence.
+**Result:** 4,489 tok/s at C=128 (69% improvement). C=1-128 stable, C=256 crashes (separate OOB bug).
+
+## Discovery #56: -cc.mode none crash is SM120 CUDA graph size limit, not Triton codegen
+**Expected:** C++ decode kernel (bypassing Triton) would fix the crash.
+**Tried:** Installed C++ fusencache_decode.so, ran with mode=none + cudagraph=full.
+**Found:** Still crashes at C=32. The Triton store kernel is still in the graph, AND the crash persists even with custom_ops=all (native C++ ops everywhere).
+**Root cause:** mode=none → no torch.compile → no piecewise graph splitting → one CUDA graph captures entire 30-layer model forward. SM120 can't handle this graph complexity. With VLLM_COMPILE, piecewise graphs split at attention ops (smaller, stable graphs).
+**Implication:** The 6,685 tok/s from Discovery #7 was on a different vLLM version with different CUDA graph behavior. Current achievable peak: 4,489 tok/s.
+**Workaround needed:** Either write ALL kernels in C++ (store + decode), or wait for Triton/CUDA graph fixes on SM120.
+
+## Discovery #57: FusenCache ALWAYS CUDA graph support breaks graph capture
+**Expected:** Universal decode approach (all tokens through decode kernel via tensor ops) would enable AttentionCGSupport.ALWAYS.
+**Found:** torch.arange(), torch.searchsorted() inside forward() dynamically allocate GPU memory — incompatible with CUDA graph capture. Causes illegal instruction during graph replay.
+**Fix:** Reverted to UNIFORM_SINGLE_TOKEN_DECODE. Mixed prefill+decode runs eagerly (correct behavior).
+**Lesson:** CUDA graph capture requires ZERO dynamic allocations inside forward(). Even "pure tensor ops" like arange/searchsorted allocate temp buffers.
