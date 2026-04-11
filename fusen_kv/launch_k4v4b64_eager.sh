@@ -1,6 +1,21 @@
 #!/bin/bash
 set -e
 
+# FusenCache K4V4B64 launch script — EAGER MODE with async scheduling.
+#
+# This configuration uses enforce-eager (no CUDA graphs) with async scheduling
+# enabled. The FusenCache backend's metadata cloning + stream sync in
+# backend.py forward() protects against async scheduling races.
+#
+# Tradeoffs vs CUDA graph mode (launch_k4v4b64.sh):
+#   Pro:  Async scheduling enabled (better CPU-GPU overlap for high throughput)
+#   Pro:  No CUDA graph capture overhead at startup
+#   Con:  ~3-4x higher per-step latency (no graph replay optimization)
+#   Con:  Higher GPU kernel launch overhead
+#
+# Use this for throughput-optimized serving. Use launch_k4v4b64.sh for
+# latency-optimized serving.
+
 # Install entry_points for plugin discovery in subprocess
 mkdir -p /usr/local/lib/python3.12/dist-packages/fusen_kv_plugin-0.1.dist-info
 cat > /usr/local/lib/python3.12/dist-packages/fusen_kv_plugin-0.1.dist-info/METADATA << 'METAEOF'
@@ -22,14 +37,6 @@ RECEOF
 
 export PYTHONPATH=/fusen:${PYTHONPATH:-}
 
-# NOTE: --no-async-scheduling is required with CUDA graphs because vLLM's
-# async scheduler modifies shared tensors (input_ids, positions, etc.) while
-# the GPU replays CUDA graphs that read them. FusenCache's metadata cloning
-# (block_table, seq_lens, slot_mapping) protects OUR tensors, but other
-# model inputs are outside our control and race with graph replay.
-#
-# For eager mode (--enforce-eager): async scheduling IS safe with FusenCache
-# thanks to metadata cloning + stream sync in backend.py forward().
 exec python3 /fusen/fusen_kv/launch_vllm.py \
   --model /models/gemma-4-26B-A4B-it-NVFP4-modelopt \
   --quantization modelopt \
@@ -37,8 +44,6 @@ exec python3 /fusen/fusen_kv/launch_vllm.py \
   --trust-remote-code \
   --port 8001 \
   --kv-cache-dtype k4v4b64 \
-  --no-async-scheduling \
-  -cc.mode none \
-  -cc.cudagraph_mode full \
-  -cc.cudagraph_capture_sizes '[1,2,4,8,16,24,32]' \
-  -cc.max_cudagraph_capture_size 32
+  --enforce-eager \
+  --gpu-memory-utilization 0.92 \
+  -cc.mode none

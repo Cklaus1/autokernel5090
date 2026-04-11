@@ -440,3 +440,10 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
 **Bug 2 (buffer OOB):** Shared buffers sized at max_graph=32, but eager fallback sends B>32. Fix: temporary buffer allocation for oversized batches.
 **Result:** ALL concurrency levels work. C=32: 1,496 tok/s. C=256: 1,345 tok/s.
 **Note:** Throughput peaks at C=32 (1,496) then plateaus. Lower than FusenCache eager (6,685) because --no-async-scheduling adds overhead. The async scheduling fix is a workaround — the proper fix is making FusenCache kernels fast enough that the race window closes naturally.
+
+## Discovery #53 (FINAL): Async scheduling race is a vLLM-level issue, not fixable from plugin
+**What we tried:** CUDA event fence (4.4μs/layer), metadata tensor cloning, stream sync
+**What works:** Protects OUR tensors (block_table, seq_lens, slot_mapping)
+**What doesn't:** vLLM's model-level tensors (input_ids, positions) are modified by CPU during CUDA graph replay — can't be cloned from attention backend plugin
+**Final answer:** Use --no-async-scheduling with CUDA graphs. Peak: 1,804 tok/s at C=32 with 4x KV.
+**To truly fix:** Would need a vLLM core patch to clone model inputs before graph replay. That's an upstream contribution, not a plugin fix.
