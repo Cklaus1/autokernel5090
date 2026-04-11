@@ -153,7 +153,13 @@ class FusenKVMetadataBuilder(AttentionMetadataBuilder[FusenKVMetadata]):
         if (_HAS_CPP_DECODE and _HAS_CPP_STORE)
         else AttentionCGSupport.NEVER
     )
-    supports_update_block_table: bool = True
+    # CRITICAL: must be False. When True, vLLM caches metadata and calls
+    # update_block_table() which updates block_table/slot_mapping but reuses
+    # the STALE query_start_loc from a prior step. When batch size changes,
+    # the universal decode path reads past the end of the smaller allocation
+    # → illegal memory access. Setting False forces build() every step,
+    # ensuring query_start_loc always reflects the current batch.
+    supports_update_block_table: bool = False
 
     def __init__(
         self,
