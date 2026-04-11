@@ -120,13 +120,17 @@ class FusenKVMetadataBuilder(AttentionMetadataBuilder[FusenKVMetadata]):
     Implements the vLLM v1 AttentionMetadataBuilder interface.
     """
 
-    # CUDA graph support: ALWAYS — we support full CUDA graph capture for
-    # ALL batch types (decode-only, mixed prefill+decode, pure prefill).
-    # The mixed path uses the "universal decode" approach: every token is
-    # treated as a separate decode request with per-token pseudo-seq_lens
-    # computed from query_start_loc. This avoids Python loops and .item()
-    # calls, making the forward() fully graph-safe.
-    _cudagraph_support = AttentionCGSupport.ALWAYS
+    # CUDA graph support: decode-only batches (uniform single-token decode).
+    # Mixed prefill+decode runs eagerly (FULL_DECODE_ONLY mode).
+    #
+    # KNOWN ISSUE (SM120/Blackwell + Triton 3.6.0): CUDA graph replay of
+    # our Triton store/decode kernels crashes with "illegal instruction"
+    # when captured alongside the full 30-layer model forward (NVFP4 +
+    # MoE + 30-layer attention). The kernels work correctly in eager mode
+    # and in isolated CUDA graph tests. This appears to be a Triton
+    # codegen bug on SM120 that produces invalid SASS under high occupancy
+    # within large CUDA graphs. Use --enforce-eager as workaround.
+    _cudagraph_support = AttentionCGSupport.UNIFORM_SINGLE_TOKEN_DECODE
     supports_update_block_table: bool = True
 
     def __init__(
@@ -1004,6 +1008,5 @@ class FusenKVImpl(AttentionImplBase):
         # handle their own ordering.
         if not _capturing:
             self._prev_step_event.record()
-            torch.cuda.current_stream().synchronize()
 
         return output
