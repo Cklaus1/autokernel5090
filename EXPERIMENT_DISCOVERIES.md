@@ -484,3 +484,10 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
 **Proof:** All-C++ kernels (7/7 correctness tests, exact byte match) produce the same crash pattern.
 **Path forward:** Wait for CUDA driver fix from NVIDIA, or add piecewise CUDA graph support to vLLM without requiring torch.compile.
 **Working peak:** 4,489 tok/s with VLLM_COMPILE + piecewise graphs (stable C=1-128).
+
+## Discovery #59: CUDA 13.2 + latest vLLM main has C=128 regression for FusenCache
+**Upgrade:** CUDA 12.8 → 13.2 (toolkit), vLLM 0.19.1rc1 → latest main (92feb99), PyTorch 2.10 → 2.11, Triton 3.6.0
+**Expected:** SM120 fixes in vLLM main would improve CUDA graph stability + throughput.
+**Found:** C=64 comparable (2,602 vs 2,519), but C=128 regressed from 4,489 → 1,329 tok/s (3.4x slower). C=256 still crashes (cudaErrorLaunchFailure).
+**Root cause:** Latest vLLM main has API/behavior changes affecting FusenCache plugin compatibility. The scheduling, CUDA graph capture, or attention backend interface changed in ways that reduce throughput at high concurrency.
+**Decision:** Stay on vLLM 0.19.1rc1 + CUDA 12.8 (4,489 tok/s proven). The CUDA 13.2 image is saved as vllm-cu132:gemma4-ready for future testing once FusenCache is updated.
