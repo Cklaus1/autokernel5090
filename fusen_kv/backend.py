@@ -17,6 +17,15 @@ import torch
 # Enable bounds checking via FUSEN_DEBUG=1 for diagnosing OOB crashes.
 # Disabled by default (zero overhead in production).
 _DEBUG = os.environ.get("FUSEN_DEBUG", "0") == "1"
+# Enable sync-after-each-kernel for crash pinpointing via FUSEN_SYNC=1.
+# Only activates in the mixed (eager) path -- never during CUDA graph capture/replay.
+_SYNC = os.environ.get("FUSEN_SYNC", "0") == "1"
+
+def _can_sync():
+    """Return True only when we are NOT inside a CUDA graph capture."""
+    if not _SYNC:
+        return False
+    return not torch.cuda.is_current_stream_capturing()
 
 # ---- Try to load C++ FusenCache decode attention kernel ----
 # The C++ kernel is CUDA-graph compatible and avoids Triton JIT overhead.
@@ -350,9 +359,14 @@ class FusenKVImpl(AttentionImplBase):
         except Exception:
             pass
 
-        # Determine num_kv_splits (must match what make_decode_fn will use)
+        # Determine num_kv_splits for shared buffer allocation.
+        # CRITICAL: use B=1 (not _max_B) to get the MAXIMUM possible splits.
+        # The decode kernel uses adaptive splits that INCREASE at smaller B:
+        #   B=256 -> 1 split,  B=16 -> 16 splits,  B=1 -> up to 128 splits.
+        # The shared buffer must accommodate the worst case (B=1), otherwise
+        # mixed prefill+decode batches with small decode counts will OOB.
         from kv_cache_gen.generate import _optimal_splits
-        _num_kv_splits = _optimal_splits(max_seq, _max_B)
+        _num_kv_splits = _optimal_splits(max_seq, 1)
 
         # Determine output dtype: match the model's compute dtype
         _out_dtype = torch.float16
@@ -713,6 +727,10 @@ class FusenKVImpl(AttentionImplBase):
                     key[:num_tokens], value[:num_tokens], kv_cache,
                     attn_metadata.slot_mapping[:num_tokens], layer, self.num_kv_heads,
                 )
+            if _can_sync():
+                torch.cuda.synchronize()
+                logger.info("FUSEN_SYNC: store OK, is_decode=%s, B=%d, num_tokens=%d",
+                            is_decode_only, B, num_tokens)
 
         if is_decode_only:
             # ---- Pure decode: all requests have 1 query token ----
@@ -732,7 +750,8 @@ class FusenKVImpl(AttentionImplBase):
             q = q.contiguous()
 
             # Bounds checking (FUSEN_DEBUG=1 to enable)
-            if _DEBUG:
+            # Skip during CUDA graph capture (.item() calls would crash capture)
+            if _DEBUG and not torch.cuda.is_current_stream_capturing():
                 num_blocks = kv_cache.shape[0]
                 block_size = kv_cache.shape[1]
                 max_slots = num_blocks * block_size
@@ -767,9 +786,25 @@ class FusenKVImpl(AttentionImplBase):
             )
 
             output[:padded_B] = attn_out[:padded_B].to(output.dtype)
+            if _can_sync():
+                torch.cuda.synchronize()
+                logger.info("FUSEN_SYNC: decode OK, padded_B=%d, B=%d", padded_B, B)
         else:
             # ---- Mixed prefill+decode or pure prefill ----
             qsl = attn_metadata.query_start_loc
+            if _can_sync():
+                logger.info(
+                    "FUSEN_SYNC: mixed path B=%d, num_tokens=%d, max_query_len=%d, "
+                    "qsl.shape=%s, query.shape=%s, key.shape=%s, output.shape=%s, "
+                    "block_table.shape=%s, seq_lens.shape=%s, kv_cache.shape=%s, "
+                    "scales.shape=%s",
+                    B, num_tokens, attn_metadata.max_query_len,
+                    qsl.shape, query.shape, key.shape, output.shape,
+                    attn_metadata.block_table.shape if attn_metadata.block_table is not None else None,
+                    attn_metadata.seq_lens.shape if attn_metadata.seq_lens is not None else None,
+                    kv_cache.shape,
+                    layer._fusen_scales.shape,
+                )
             decode_indices = []
             for i in range(B):
                 q_start = qsl[i].item()
@@ -778,12 +813,19 @@ class FusenKVImpl(AttentionImplBase):
 
                 if q_len > 1:
                     # Prefill: use manual attention (supports soft_cap)
+                    if _can_sync():
+                        logger.info("FUSEN_SYNC: prefill req %d, q_start=%d, q_end=%d, q_len=%d",
+                                    i, q_start, q_end, q_len)
                     prefill_out = self._prefill_with_sliding_window(
                         query[q_start:q_end],
                         key[q_start:q_end],
                         value[q_start:q_end],
                         q_len,
                     )
+                    if _can_sync():
+                        torch.cuda.synchronize()
+                        logger.info("FUSEN_SYNC: prefill req %d OK, prefill_out.shape=%s",
+                                    i, prefill_out.shape)
                     # prefill_out is [n, Hq*D], reshape to [n, Hq, D]
                     output[q_start:q_end] = prefill_out.reshape(
                         q_len, self.num_heads, self.head_size).to(output.dtype)
@@ -800,13 +842,41 @@ class FusenKVImpl(AttentionImplBase):
                 if dec_queries.ndim == 2:
                     dec_queries = dec_queries.reshape(n_dec, self.num_heads, self.head_size)
 
+                dec_block_table = attn_metadata.block_table[dec_idx]
+                dec_seq_lens = attn_metadata.seq_lens[dec_idx]
+
+                if _can_sync():
+                    logger.info(
+                        "FUSEN_SYNC: mixed decode n_dec=%d, dec_idx=%s, "
+                        "dec_token_starts=%s, dec_queries.shape=%s, "
+                        "dec_block_table.shape=%s, dec_seq_lens=%s, "
+                        "kv_cache.shape=%s, scales.shape=%s",
+                        n_dec, dec_idx.tolist(), dec_token_starts.tolist(),
+                        dec_queries.shape, dec_block_table.shape,
+                        dec_seq_lens.tolist(), kv_cache.shape,
+                        layer._fusen_scales.shape,
+                    )
+                    # Check for OOB block_table entries
+                    num_blocks = kv_cache.shape[0]
+                    active = dec_seq_lens > 0
+                    if active.any():
+                        max_blk = dec_block_table[active].max().item()
+                        if max_blk >= num_blocks:
+                            logger.error(
+                                "FUSEN_SYNC: MIXED DECODE block_table OOB! "
+                                "max_block=%d >= num_blocks=%d", max_blk, num_blocks)
+
                 _decode = self._cpp_decode if self._use_cpp_decode else self.decode_fn
                 attn_out = _decode(
                     dec_queries, kv_cache, layer._fusen_scales,
-                    attn_metadata.block_table[dec_idx],
-                    attn_metadata.seq_lens[dec_idx],
+                    dec_block_table,
+                    dec_seq_lens,
                     self.scale, self.num_kv_heads,
                 )
+
+                if _can_sync():
+                    torch.cuda.synchronize()
+                    logger.info("FUSEN_SYNC: mixed decode OK, attn_out.shape=%s", attn_out.shape)
 
                 output[dec_token_starts] = attn_out[:n_dec].to(output.dtype)
 

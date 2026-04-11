@@ -383,3 +383,9 @@ For single-user: FusenCache + CUDA graphs (113 tok/s, matches native vLLM).
 **C=16+: errors** (shape mismatches in mixed prefill+decode path when batch > graph capture size)
 **Two shape fixes applied** but more edge cases remain at larger batch sizes.
 **Status:** Single-user FusenCache + CUDA graphs is SOLVED. Batch path needs more debugging.
+
+## Discovery #46: Shared buffer underallocation was 32x OOB write
+**Problem:** C=16+ crashed with shared buffers
+**Root cause:** `_optimal_splits(max_seq, max_B=256)` = 1 split, but at B=6 (mixed batch decode portion), kernel needs 32 splits → 32x buffer overflow on split dimension
+**Fix:** Allocate at `_optimal_splits(max_seq, B=1)` = 32 splits (maximum possible)
+**Result:** Buffer overflow fixed. But sporadic CUDA crashes remain (Triton/SM120 issue, affects all concurrency levels including C=1, unrelated to FusenCache).
