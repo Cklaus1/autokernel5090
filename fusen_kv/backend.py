@@ -865,10 +865,19 @@ class FusenKVImpl(AttentionImplBase):
         _capturing = torch.cuda.is_current_stream_capturing()
 
         if not _capturing:
+            # PIECEWISE FIX: Ensure non_blocking H2D metadata copies are visible.
+            # vLLM copies query_start_loc/seq_lens to GPU with non_blocking=True
+            # on the default stream. In piecewise mode, attention runs eagerly
+            # on a potentially different compute stream. Wait for the default
+            # stream to ensure copies are complete. No-op when streams match
+            # (mode=none), so zero cost for the common case.
+            _cur_stream = torch.cuda.current_stream(query.device)
+            _def_stream = torch.cuda.default_stream(query.device)
+            if _cur_stream != _def_stream:
+                _cur_stream.wait_stream(_def_stream)
+
             # GPU-side fence: ensure previous step's kernels finish before
             # we start reusing shared decode buffers (mid_out, output).
-            # After this wait completes on the GPU, the previous step's clones
-            # (stored in self._prev_*) are safe to release.
             torch.cuda.current_stream().wait_event(self._prev_step_event)
 
             # Clone metadata to isolate from async scheduler writes.
