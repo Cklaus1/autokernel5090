@@ -27,8 +27,15 @@ fi
 
 stop_servers
 
-echo "=== Starting Gemma4 26B on GPU 0 (port 8000) ==="
+# CPU pinning: each server gets its own CCD on the 9950X3D (16C/32T).
+# Prevents L3 V-Cache thrashing between the two CCDs.
+# Adjust if your CPU has a different core count.
+CPUS_GPU0="0-15"    # CCD 0
+CPUS_GPU1="16-31"   # CCD 1
+
+echo "=== Starting Gemma4 26B on GPU 0 (port 8000, cores ${CPUS_GPU0}) ==="
 docker run -d --name vllm-gemma4 --gpus '"device=0"' --memory=80g \
+    --cpuset-cpus="${CPUS_GPU0}" \
     -v ${MODELS_DIR}:/models:ro -p 8000:8000 \
     --entrypoint python3 ${IMAGE} \
     -m vllm.entrypoints.openai.api_server \
@@ -37,8 +44,9 @@ docker run -d --name vllm-gemma4 --gpus '"device=0"' --memory=80g \
     --served-model-name gemma-4-26B-A4B-it-NVFP4 \
     --kv-cache-dtype fp8 -cc.mode none -cc.cudagraph_mode full
 
-echo "=== Starting Qwen3 30B on GPU 1 (port 8001) ==="
+echo "=== Starting Qwen3 30B on GPU 1 (port 8001, cores ${CPUS_GPU1}) ==="
 docker run -d --name vllm-qwen3 --gpus '"device=1"' --memory=80g \
+    --cpuset-cpus="${CPUS_GPU1}" \
     -v ${MODELS_DIR}:/models:ro -p 8001:8000 \
     --entrypoint python3 ${IMAGE} \
     -m vllm.entrypoints.openai.api_server \
