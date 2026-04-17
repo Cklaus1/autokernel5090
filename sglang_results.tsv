@@ -1,0 +1,74 @@
+experiment	tag	decode_tok_s	batch32_tok_s	accept_length	status	description
+102	nvfp4_baseline	107.2	1290	N/A	KEEP	NVFP4 9B baseline on SGLang (no spec decode, triton backend)
+102	nvfp4_baseline	105.6	1229	N/A	KEEP	NVFP4 9B SGLang baseline (triton, no spec decode)
+103	nvfp4_dflash_8x8	362.4	1873	8.00	KEEP	NVFP4 + DFlash (8 reqs, 8 draft tokens, 3.2GB mamba reserve)
+104	dflash_16draft_4req	631.5	1079	16.00	KEEP	DFlash 16 draft tokens, 4 reqs (3.2GB reserve). 100% acceptance!
+105	dflash_16d_8req_m90	151.9	138	16.00	REVERT	REVERT: 8 reqs × 16 draft = 6.4GB reserve, KV cache starved
+106	dflash_16d_4req_m90	31.6	116	16.00	REVERT	REVERT: mem_frac=0.90 starves KV cache with mamba state
+107	dflash_16d_4req_m80	867.5	3072	16.00	KEEP	mem_frac=0.80: MORE KV cache = 867 tok/s decode! 100% accept
+108	dflash_16d_4req_m75	879.0	3041	16.00	KEEP	mem_frac=0.75: 879 tok/s (marginal over 0.80)
+109	dflash_page64	858.5	2991	16.00	REVERT	REVERT: page-size=64 slightly worse (-2%)
+110	cuda_graph_bs4	866.9	3006	16.00	REVERT	REVERT: cuda-graph-max-bs=4 neutral
+111	no_cuda_graph	465.1	1732	16.00	REVERT	REVERT: disable-cuda-graph = -47% decode. CUDA graphs essential.
+112	num_steps_2	863.7	3098	16.00	REVERT	REVERT: speculative-num-steps=2 neutral
+113	cont_decode_4	882.3	3052	16.00	KEEP	num-continuous-decode-steps=4: new best 882.3 tok/s (+1.7%)
+114	cont_decode_8	862.3	3070	16.00	REVERT	REVERT: steps=8 slightly worse than steps=4
+115	fp4_cutlass	0.0	0	N/A	FAIL	FAIL: --fp4-gemm-runner-backend not supported in SGLang 0.5.9
+116	diverse_stress	871.3	3052	16.00	KEEP	Diverse 6 prompts × 512 tok: 871 tok/s avg, peak 941, 100% accept, std=16.7
+117	temp_07	0.0	0	N/A	FAIL	FAIL: DFlash + temp=0.7 crashes (CUDA assert in multinomial). Greedy only.
+118	batch_opt_16r_4d	256.4	2968	4.00	REVERT	REVERT: 4 draft tokens = 256 decode (-71%). Draft count dominates decode speed.
+119	dflash_2r_32d	1387.4	2638	32.00	KEEP	2 reqs × 32 draft: 1387 tok/s decode! 100% accept. Batch limited by 2 reqs.
+120	dflash_1r_64d	1684.9	1780	64.00	KEEP	1 req × 64 draft: 1685 tok/s decode! 100% accept (64/64). NEW PEAK.
+121	dflash_1r_128d	56.3	0	128.00	FAIL	FAIL: 128 draft = garbage output (all !). DFlash block_size=16 max.
+122	QUALITY_INVALIDATION	0.0	0	N/A	FAIL	ALL NVFP4 RESULTS INVALID: Kbenkhaled compressed-tensors format produces garbage on SGLang 0.5.9. BF16 works. Need modelopt NVFP4 checkpoint.
+123	bf16_baseline	83.0	0	N/A	KEEP	BF16 9B SGLang baseline: 83 tok/s decode. Correct output confirmed.
+124	bf16_dflash_oom	0.0	0	N/A	FAIL	BF16 9B + DFlash OOM: 17.6GB model + 3.2GB mamba state > 32GB. NVFP4 required.
+126	vllm_dflash_port	0.0	0	N/A	WIP	PR #36847 ported to vLLM 0.17.0 + Qwen3.5 NVFP4. Fixed: aux_hidden_states, SupportsEagle3, M-RoPE positions, block_size. Model loads + CUDA graphs capture. CUDA assert on first inference — slot_mapping likely wrong for M-RoPE. Close but needs more work on DFlash slot_mapping for hybrid Qwen3.5.
+127	vllm_nvfp4_dflash_WORKS	316.3	0	N/A	KEEP	vLLM NVFP4 + DFlash WORKING! 316.3 tok/s decode (2.59x vs vLLM baseline 122). Correct output verified on 3 prompts. CUDA graphs ON.
+128	vllm_dflash_eager	8.1	0	N/A	KEEP	vLLM NVFP4 + DFlash eager: 8.1 tok/s correct output. CUDA graphs hang.
+130	vllm_dflash_cuda_graphs	94.6	0	N/A	KEEP	vLLM NVFP4 + DFlash + CUDA graphs WORKING! 94.6 tok/s, quality OK. All 8 patches applied. Reproducible.
+131	dflash_draft2	117.8	0	N/A	KEEP	DFlash draft=2: 117.8 tok/s (near baseline 125)
+132	dflash_draft4	135.0	0	N/A	KEEP	DFlash draft=4: 135.0 tok/s ABOVE BASELINE! (+8% vs 125)
+133	dflash_draft8	87.2	0	N/A	REVERT	DFlash draft=8: 87.2 (-30%). Overhead > benefit.
+134	dflash_draft16	61.5	0	N/A	REVERT	DFlash draft=16: 61.5 (-51%). Way too much overhead.
+135	dflash_draft3	144.1	0	N/A	KEEP	DFlash draft=3: 144.1 tok/s (+15% vs baseline)
+136	dflash_draft6_BEST	162.3	0	N/A	KEEP	DFlash draft=6: 162.3 tok/s (+30% vs baseline 125). NEW BEST! Quality OK.
+137	dflash_draft5	114.2	0	N/A	REVERT	DFlash draft=5: 114.2 (-9%)
+138	dflash_draft7	105.9	0	N/A	REVERT	DFlash draft=7: 105.9 (-15%)
+139	dflash_d6_m80	164.0	0	N/A	KEEP	DFlash draft=6 mem=0.80: 164.0 tok/s
+140	dflash_d6_m90	170.4	0	N/A	KEEP	DFlash draft=6 mem=0.90: 170.4 tok/s NEW BEST (+36% vs baseline)
+141	dflash_d6_m92	170.4	0	N/A	KEEP	DFlash draft=6 mem=0.92: 170.4 tok/s (same as 0.90)
+142	baseline_steady	124.8	0	N/A	KEEP	Baseline (no DFlash) steady state: 124.8 tok/s (excluding first-run JIT)
+143	dflash_d6_m90_steady	170.0	0	N/A	KEEP	CONFIRMED BEST: DFlash draft=6 mem=0.90: 170.0 tok/s steady (+36% vs baseline). Quality OK.
+144	dflash_inproc	170.0	0	N/A	REVERT	In-process mode: same speed (170.0). IPC not a bottleneck.
+145	dflash_maxlen512	138.6	0	N/A	REVERT	max_model_len=512: slower (138.6). CUDA graph alignment worse.
+146	baseline_batch_sweep	5817.0	5817	N/A	KEEP	Baseline batch peak: 5817 tok/s at batch=96. Cliff at 128.
+147	dflash_batch_sweep	484.0	484	N/A	KEEP	DFlash batch peak: 484 tok/s at batch=32. Plateaus. 12x slower than baseline at batch=96.
+148	auto_kv_batch_sweep	5604.0	5604	N/A	KEEP	Auto KV batch peak: 5604 tok/s at batch=120. Cliff at 128. Close to earlier 6329.
+149	fp8kv_batch_sweep_v2	4474.0	4474	N/A	REVERT	FP8 e4m3 KV peak: 4474 at batch=96. FP8 e5m2 blocked with NVFP4. Underperforms auto KV.
+150	fp8kv_e5m2_unblocked	122.1	5674	N/A	KEEP	FP8 e5m2 KV UNBLOCKED! decode=122, peak_batch=5674@bs96. Cliff still at bs128 - FP8 KV not expanding capacity as expected.
+151	fp8kv_gpu92	7.4	479	N/A	FAIL	FP8 KV + gpu=0.92: OOM crash. Too aggressive.
+152	fp8kv_noprefix	0.0	5868	N/A	KEEP	FP8 KV + no prefix cache: peak 5868@bs120. +5% over auto KV. Cliff still at bs128.
+153	dflash_decode_only	165.4	508	N/A	KEEP	DFlash draft=6 decode focus: 165.4 tok/s decode, 508 batch peak.
+154	mamba_fp16_fp8kv_PEAK	119.8	7695	N/A	KEEP	NEW BATCH PEAK! Mamba FP16 + FP8 KV: 7695@bs128 (surpasses earlier 7075). Cliff at bs256. Quality OK.
+155	mamba_fp16_fp8kv_fine	119.8	7515	N/A	KEEP	Fine sweep: 7515@bs128, 7272@bs120, 7228@bs112. Broad plateau 7000+ from bs96-224.
+156	CEILING_ANALYSIS	0.0	0	N/A	INFO	Decode: 170/191 tok/s (89% of BW ceiling, 105% of practical). NEAR PEAK. Batch: 7695/15131 (51% of practical). ROOM TO GROW.
+157	mamba_fp16_noprefix	114.5	7445	N/A	KEEP	Mamba FP16 + FP8 KV + no prefix: peak 7445@bs224. Broader plateau but lower peak than with prefix.
+158	ctx1024_BEST_BATCH	125.0	8245	N/A	KEEP	NEW BATCH PEAK! ctx=1024: 8245@bs128. Shorter context = more sequences = higher throughput.
+159	ctx1024_noprefix	120.6	7515	N/A	REVERT	ctx=1024 + no prefix: 7515@bs128. No prefix hurts here.
+160	dflash_combo	0.0	0	N/A	FAIL	DFlash + Mamba FP16 + FP8 KV: failed (likely OOM from DFlash + FP8 KV + Mamba state)
+161	ctx512	0.0	7801	N/A	REVERT	ctx=512: 7801@bs128. Worse than ctx=1024.
+162	ctx768	0.0	7939	N/A	REVERT	ctx=768: 7939@bs128. Worse than ctx=1024.
+163	gpu91_ctx1024	0.0	7368	N/A	REVERT	gpu=0.91 + ctx=1024: 7368@bs96. Worse than gpu=0.90.
+164	seqs64	0.0	5527	N/A	REVERT	max_num_seqs=64: 5527@bs192. Too restrictive.
+165	seqs128	0.0	6063	N/A	REVERT	max_num_seqs=128: 6063@bs96. Worse than default 256.
+166	seqs256	0.0	7847	N/A	KEEP	max_num_seqs=256 (default): 7847@bs128. Best.
+167	align_mode	123.3	8038	N/A	KEEP	mamba-cache-mode=align: 8038@bs128. Cliff softened.
+168	align_noprefix_ctx2048	0.0	8155	N/A	KEEP	align + ctx2048 + no prefix: 8155@bs128. No hard cliff - 6155@bs256 still usable.
+169	align_sustained_batch	0.0	7744	N/A	KEEP	KEY: align mode sustains 6000-7700 tok/s from bs96 to bs512. No cliff! 6262@bs512 vs 1023 without.
+170	server_batch_32	0.0	2973	N/A	KEEP	vLLM server: 32 concurrent → 2973 output tok/s
+171	server_batch_64	0.0	4574	N/A	KEEP	vLLM server: 64 concurrent → 4574 output tok/s
+172	server_batch_128	0.0	7981	N/A	KEEP	vLLM server: 128 concurrent → 7981 peak output tok/s, 6862 sustained. Matches LLM API.
+173	ctx64K_production	112.0	7209	N/A	KEEP	PRODUCTION CONFIG: ctx=64K + FP8 KV + Mamba FP16: decode=112, batch=7209@bs128. Only -13% vs ctx=1K. Quality OK.
+174	tool_calling_works	0.0	0	N/A	KEEP	vLLM tool calling VERIFIED: single call, parallel calls (2 cities), no-tool bypass, multi-step chain. All pass with --enable-auto-tool-choice --tool-call-parser qwen3_xml
+175	35b_nvfp4_baseline	11.2	55	N/A	KEEP	35B-A3B NVFP4: decode=11.2 tok/s, conc16=55 tok/s. Quality OK. Tool calling OK (parallel). gpu=0.93, ctx=4096, FP8 KV + Mamba FP16.

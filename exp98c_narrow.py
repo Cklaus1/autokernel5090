@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Narrow down: which part of the drafting loop crashes?
+
+Test 1: Run loop but skip the model forward (only update metadata)
+Test 2: Run 1 iteration of loop (not 2)
+Test 3: Run loop but skip slot_mapping update
+"""
+
+import os, gc, time, traceback
+
+os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+os.environ["VLLM_LOG_LEVEL"] = "WARNING"
+
+MODEL = "Kbenkhaled/Qwen3.5-9B-NVFP4"
+PROMPT = "Write merge sort in Python:"
+
+
+def test_config(name, patch_fn):
+    import torch
+    print(f"\n=== {name} ===")
+    patch_fn()
+    from vllm import LLM, SamplingParams
+    llm = LLM(
+        model=MODEL, gpu_memory_utilization=0.90, max_num_seqs=128,
+        max_model_len=4096, enable_chunked_prefill=False,
+        speculative_config={"num_speculative_tokens": 3, "method": "qwen3_5_mtp"},
+    )
+    sp = SamplingParams(max_tokens=100, temperature=0.0)
+    llm.generate([PROMPT], sp)
+    llm.generate([PROMPT], sp)
+    for bs in [4, 8, 16, 32]:
+        try:
+            outputs = llm.generate([PROMPT]*bs, sp)
+            ntok = sum(len(o.outputs[0].token_ids) for o in outputs)
+            print(f"  batch={bs}: OK ({ntok} tokens)")
+        except Exception as e:
+            print(f"  batch={bs}: CRASHED")
+            break
+    del llm
+    torch.cuda.empty_cache()
+    gc.collect()
+    time.sleep(3)
+
+
+def patch_limit_1_iteration():
+    """Only run 1 iteration of the drafting loop instead of 2."""
+    import vllm.v1.spec_decode.eagle as m
+    orig = m.EagleProposer.propose
+
+    def patched(self, *args, **kwargs):
+        orig_n = self.num_speculative_tokens
+        self.num_speculative_tokens = 2  # loop runs N-1=1 iterations
+        result = orig(self, *args, **kwargs)
+        self.num_speculative_tokens = orig_n
+        if result.dim() == 2 and result.shape[1] < orig_n:
+            import torch
+            padding = result[:, -1:].expand(-1, orig_n - result.shape[1])
+            result = torch.cat([result, padding], dim=1)
+        return result
+
+    m.EagleProposer.propose = patched
+    print("[PATCH] Limit to 1 iteration of drafting loop")
+
+
+def main():
+    test_config("1 iteration (num_spec=2)", patch_limit_1_iteration)
+
+
+if __name__ == "__main__":
+    main()

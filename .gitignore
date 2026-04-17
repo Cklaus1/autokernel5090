@@ -29,3 +29,7 @@ report.md
 # Workspace (runtime artifacts)
 workspace/
 cache/fused_kernel/*.so
+vllm-0.17.0-patched-backup/
+vllm-0.18.1-patched-backup/
+flashinfer-0.6.4-patched-backup/
+*.so

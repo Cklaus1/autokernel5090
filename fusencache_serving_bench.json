@@ -1,0 +1,58 @@
+[
+  {
+    "error": "All requests failed",
+    "failures": [
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]"
+    ]
+  },
+  {
+    "error": "All requests failed",
+    "failures": [
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]"
+    ]
+  },
+  {
+    "error": "All requests failed",
+    "failures": [
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]"
+    ]
+  },
+  {
+    "error": "All requests failed",
+    "failures": [
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]"
+    ]
+  },
+  {
+    "error": "All requests failed",
+    "failures": [
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]"
+    ]
+  },
+  {
+    "error": "All requests failed",
+    "failures": [
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]"
+    ]
+  },
+  {
+    "error": "All requests failed",
+    "failures": [
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]",
+      "Cannot connect to host localhost:8001 ssl:default [Connect call failed ('127.0.0.1', 8001)]"
+    ]
+  }
+]

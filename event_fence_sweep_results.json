@@ -1,0 +1,72 @@
+[
+  {
+    "concurrency": 1,
+    "num_requests": 64,
+    "ok": 64,
+    "errors": 0,
+    "status": "PASS",
+    "wall_time": 207.45233457499126,
+    "throughput_tok_s": 23.036617109133836,
+    "avg_latency": 3.241403673609966,
+    "p50_latency": 3.2278649080108153,
+    "p99_latency": 4.291513951000525,
+    "total_output_tokens": 4779,
+    "error_details": []
+  },
+  {
+    "concurrency": 4,
+    "num_requests": 64,
+    "ok": 64,
+    "errors": 0,
+    "status": "PASS",
+    "wall_time": 57.045357274997514,
+    "throughput_tok_s": 89.2798335094698,
+    "avg_latency": 3.5559286619065915,
+    "p50_latency": 3.570210970006883,
+    "p99_latency": 3.6955531060084468,
+    "total_output_tokens": 5093,
+    "error_details": []
+  },
+  {
+    "concurrency": 8,
+    "num_requests": 64,
+    "ok": 64,
+    "errors": 0,
+    "status": "PASS",
+    "wall_time": 33.79772797800251,
+    "throughput_tok_s": 149.06327440942235,
+    "avg_latency": 4.1784728083123355,
+    "p50_latency": 3.79267122199235,
+    "p99_latency": 7.127202426010626,
+    "total_output_tokens": 5038,
+    "error_details": []
+  },
+  {
+    "concurrency": 16,
+    "num_requests": 64,
+    "ok": 64,
+    "errors": 0,
+    "status": "PASS",
+    "wall_time": 16.06699996899988,
+    "throughput_tok_s": 297.19300486792923,
+    "avg_latency": 3.783486641671516,
+    "p50_latency": 3.974833636006224,
+    "p99_latency": 4.2346312570007285,
+    "total_output_tokens": 4775,
+    "error_details": []
+  },
+  {
+    "concurrency": 32,
+    "num_requests": 64,
+    "ok": 64,
+    "errors": 0,
+    "status": "PASS",
+    "wall_time": 9.18711741900188,
+    "throughput_tok_s": 532.7024546216915,
+    "avg_latency": 4.427955223937715,
+    "p50_latency": 4.474083946988685,
+    "p99_latency": 5.04090945799544,
+    "total_output_tokens": 4894,
+    "error_details": []
+  }
+]

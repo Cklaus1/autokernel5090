@@ -1,0 +1,102 @@
+{
+  "model": "gemma-4-26B-A4B-it-NVFP4",
+  "max_tokens": 256,
+  "results": [
+    {
+      "concurrency": 1,
+      "num_requests": 1,
+      "total_prompt_tokens": 24,
+      "total_gen_tokens": 256,
+      "wall_time_s": 10.14,
+      "gen_tok_per_s": 25.3,
+      "total_tok_per_s": 27.6,
+      "avg_latency_s": 10.14,
+      "p50_latency_s": 10.14,
+      "errors": 0
+    },
+    {
+      "concurrency": 4,
+      "num_requests": 4,
+      "total_prompt_tokens": 118,
+      "total_gen_tokens": 1024,
+      "wall_time_s": 9.35,
+      "gen_tok_per_s": 109.5,
+      "total_tok_per_s": 122.2,
+      "avg_latency_s": 9.35,
+      "p50_latency_s": 9.35,
+      "errors": 0
+    },
+    {
+      "concurrency": 8,
+      "num_requests": 8,
+      "total_prompt_tokens": 226,
+      "total_gen_tokens": 2048,
+      "wall_time_s": 13.39,
+      "gen_tok_per_s": 153.0,
+      "total_tok_per_s": 169.8,
+      "avg_latency_s": 13.38,
+      "p50_latency_s": 13.38,
+      "errors": 0
+    },
+    {
+      "concurrency": 16,
+      "num_requests": 16,
+      "total_prompt_tokens": 460,
+      "total_gen_tokens": 4096,
+      "wall_time_s": 9.57,
+      "gen_tok_per_s": 428.0,
+      "total_tok_per_s": 476.1,
+      "avg_latency_s": 9.56,
+      "p50_latency_s": 9.56,
+      "errors": 0
+    },
+    {
+      "concurrency": 32,
+      "num_requests": 32,
+      "total_prompt_tokens": 884,
+      "total_gen_tokens": 8192,
+      "wall_time_s": 10.47,
+      "gen_tok_per_s": 782.3,
+      "total_tok_per_s": 866.8,
+      "avg_latency_s": 10.45,
+      "p50_latency_s": 10.45,
+      "errors": 0
+    },
+    {
+      "concurrency": 8,
+      "num_requests": 32,
+      "total_prompt_tokens": 884,
+      "total_gen_tokens": 8192,
+      "wall_time_s": 39.48,
+      "gen_tok_per_s": 207.5,
+      "total_tok_per_s": 229.9,
+      "avg_latency_s": 9.87,
+      "p50_latency_s": 10.37,
+      "errors": 0
+    },
+    {
+      "concurrency": 16,
+      "num_requests": 64,
+      "total_prompt_tokens": 1768,
+      "total_gen_tokens": 16384,
+      "wall_time_s": 39.76,
+      "gen_tok_per_s": 412.1,
+      "total_tok_per_s": 456.5,
+      "avg_latency_s": 9.94,
+      "p50_latency_s": 10.44,
+      "errors": 0
+    },
+    {
+      "concurrency": 32,
+      "num_requests": 128,
+      "total_prompt_tokens": 3536,
+      "total_gen_tokens": 32768,
+      "wall_time_s": 38.21,
+      "gen_tok_per_s": 857.5,
+      "total_tok_per_s": 950.0,
+      "avg_latency_s": 9.54,
+      "p50_latency_s": 10.58,
+      "errors": 0
+    }
+  ]
+}

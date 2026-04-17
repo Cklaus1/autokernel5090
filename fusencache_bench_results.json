@@ -1,0 +1,289 @@
+{
+  "FP16 (baseline)": {
+    "perplexity": {
+      "accuracy": 0.7,
+      "correct": 14,
+      "total": 20
+    },
+    "needle": {
+      "accuracy": 1.0,
+      "found": 15,
+      "total": 15,
+      "details": [
+        {
+          "context_length": 512,
+          "depth": 0.1,
+          "actual_tokens": 470,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 512,
+          "depth": 0.25,
+          "actual_tokens": 470,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 512,
+          "depth": 0.5,
+          "actual_tokens": 470,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 512,
+          "depth": 0.75,
+          "actual_tokens": 470,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 512,
+          "depth": 0.9,
+          "actual_tokens": 470,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 1024,
+          "depth": 0.1,
+          "actual_tokens": 950,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 1024,
+          "depth": 0.25,
+          "actual_tokens": 950,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 1024,
+          "depth": 0.5,
+          "actual_tokens": 950,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 1024,
+          "depth": 0.75,
+          "actual_tokens": 950,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 1024,
+          "depth": 0.9,
+          "actual_tokens": 950,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 2048,
+          "depth": 0.1,
+          "actual_tokens": 2006,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 2048,
+          "depth": 0.25,
+          "actual_tokens": 2006,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 2048,
+          "depth": 0.5,
+          "actual_tokens": 2006,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 2048,
+          "depth": 0.75,
+          "actual_tokens": 2006,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 2048,
+          "depth": 0.9,
+          "actual_tokens": 2006,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        }
+      ]
+    },
+    "throughput": {
+      "tok_s": 74.8,
+      "total_tokens": 500,
+      "elapsed_s": 6.7,
+      "coherent": 5,
+      "total": 5
+    }
+  },
+  "FusenCache v1": {
+    "perplexity": {
+      "accuracy": 0.7,
+      "correct": 14,
+      "total": 20
+    },
+    "needle": {
+      "accuracy": 0.65,
+      "found": 13,
+      "total": 20,
+      "details": [
+        {
+          "context_length": 512,
+          "depth": 0.1,
+          "actual_tokens": 470,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 512,
+          "depth": 0.25,
+          "actual_tokens": 470,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 512,
+          "depth": 0.5,
+          "actual_tokens": 470,
+          "found": true,
+          "answer": "The secret code for Project Aurora is **DELTA-7749**."
+        },
+        {
+          "context_length": 512,
+          "depth": 0.75,
+          "actual_tokens": 470,
+          "found": true,
+          "answer": "The secret code for Project Aurora is **DELTA-7749**."
+        },
+        {
+          "context_length": 512,
+          "depth": 0.9,
+          "actual_tokens": 470,
+          "found": true,
+          "answer": "The secret code for Project Aurora is **DELTA-7749**."
+        },
+        {
+          "context_length": 1024,
+          "depth": 0.1,
+          "actual_tokens": 950,
+          "found": true,
+          "answer": "The secret code for Project Aurora mentioned in the text is **DELTA-7749**."
+        },
+        {
+          "context_length": 1024,
+          "depth": 0.25,
+          "actual_tokens": 950,
+          "found": false,
+          "answer": "Based on the text provided, there is no mention of a \"secret code for Project Aurora.\" The text cons"
+        },
+        {
+          "context_length": 1024,
+          "depth": 0.5,
+          "actual_tokens": 950,
+          "found": true,
+          "answer": "The secret code for Project Aurora is **DELTA-7749**."
+        },
+        {
+          "context_length": 1024,
+          "depth": 0.75,
+          "actual_tokens": 950,
+          "found": true,
+          "answer": "The secret code for Project Aurora is **DELTA-7749**."
+        },
+        {
+          "context_length": 1024,
+          "depth": 0.9,
+          "actual_tokens": 950,
+          "found": true,
+          "answer": "The secret code for Project Aurora is **DELTA-7749**."
+        },
+        {
+          "context_length": 2048,
+          "depth": 0.1,
+          "actual_tokens": 2006,
+          "found": false,
+          "answer": "Based on the text provided, there is no mention of a \"secret code for Project Aurora.\n\nThe text cons"
+        },
+        {
+          "context_length": 2048,
+          "depth": 0.25,
+          "actual_tokens": 2006,
+          "found": false,
+          "answer": "Based same as well as well as well as well as well as well as well as well as well as well same as w"
+        },
+        {
+          "context_length": 2048,
+          "depth": 0.5,
+          "actual_tokens": 2006,
+          "found": true,
+          "answer": "The secret code for Project Aurora is **DELTA-7749."
+        },
+        {
+          "context_length": 2048,
+          "depth": 0.75,
+          "actual_tokens": 2006,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 2048,
+          "depth": 0.9,
+          "actual_tokens": 2006,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        },
+        {
+          "context_length": 4096,
+          "depth": 0.1,
+          "actual_tokens": 4022,
+          "found": false,
+          "answer": "The same same species in the same same species in same rain. same rain. part cloudy with a same rain"
+        },
+        {
+          "context_length": 4096,
+          "depth": 0.25,
+          "actual_tokens": 4022,
+          "found": false,
+          "answer": "The same text provided in terms of rain. Scientists have discovered new species in the same ocean. T"
+        },
+        {
+          "context_length": 4096,
+          "depth": 0.5,
+          "actual_tokens": 4022,
+          "found": false,
+          "answer": "The same topic. Scientists have discovered new species in the ocean. Technology continues to advance"
+        },
+        {
+          "context_length": 4096,
+          "depth": 0.75,
+          "actual_tokens": 4022,
+          "found": false,
+          "answer": "The same species in the deep ocean. Technology continues toC-CCC-C-C-C-CC-CC-CC-CC-CC-CC-CCC-CCC-C"
+        },
+        {
+          "context_length": 4096,
+          "depth": 0.9,
+          "actual_tokens": 4022,
+          "found": true,
+          "answer": "The secret code for Project Aurora is DELTA-7749."
+        }
+      ]
+    },
+    "throughput": {
+      "tok_s": 5.9,
+      "total_tokens": 500,
+      "elapsed_s": 84.9,
+      "coherent": 5,
+      "total": 5
+    }
+  }
+}
