@@ -1,0 +1,188 @@
+--- /tmp/vllm-clean/vllm/v1/spec_decode/eagle.py	2026-04-01 16:16:40.598616664 -0400
++++ /usr/local/lib/python3.12/dist-packages/vllm/v1/spec_decode/eagle.py	2026-03-16 09:24:17.553987463 -0400
+@@ -3,7 +3,7 @@
+ import ast
+ from dataclasses import replace
+ from importlib.util import find_spec
+-from typing import cast
++from typing import Any, cast
+ 
+ import numpy as np
+ import torch
+@@ -21,7 +21,6 @@
+ from vllm.model_executor.model_loader import get_model
+ from vllm.model_executor.models import supports_multimodal
+ from vllm.model_executor.models.interfaces import SupportsMultiModal
+-from vllm.model_executor.models.llama_eagle3 import Eagle3LlamaForCausalLM
+ from vllm.multimodal import MULTIMODAL_REGISTRY
+ from vllm.platforms import current_platform
+ from vllm.triton_utils import triton
+@@ -88,7 +87,7 @@
+             1 if not self.parallel_drafting else self.num_speculative_tokens
+         )
+         self.net_num_new_slots_per_request = self.extra_slots_per_request - (
+-            1 if self.pass_hidden_states_to_model else 0
++            1 if (self.pass_hidden_states_to_model and self.method != "dflash") else 0
+         )
+         self.needs_extra_input_slots = self.net_num_new_slots_per_request > 0
+ 
+@@ -100,7 +99,8 @@
+             self.speculative_config.use_local_argmax_reduction
+         )
+ 
+-        max_batch_size = vllm_config.scheduler_config.max_num_seqs
++        self.max_batch_size = vllm_config.scheduler_config.max_num_seqs
++        max_batch_size = self.max_batch_size
+         self.max_num_tokens = vllm_config.scheduler_config.max_num_batched_tokens
+         self.token_arange_np = np.arange(self.max_num_tokens)
+ 
+@@ -297,14 +297,19 @@
+         # for those masked slots.
+ 
+         model_hf_config = self.draft_model_config.hf_config
+-        if hasattr(model_hf_config, "pard_token"):
++        # DFlash stores mask_token_id in dflash_config
++        dflash_config = getattr(model_hf_config, "dflash_config", None)
++        if dflash_config and "mask_token_id" in dflash_config:
++            self.parallel_drafting_token_id = dflash_config["mask_token_id"]
++        elif hasattr(model_hf_config, "pard_token"):
+             self.parallel_drafting_token_id = model_hf_config.pard_token
+         elif hasattr(model_hf_config, "ptd_token_id"):
+             self.parallel_drafting_token_id = model_hf_config.ptd_token_id
+         else:
+             raise ValueError(
+                 "For parallel drafting, the draft model config must have "
+-                "`pard_token` or `ptd_token_id` specified in its config.json."
++                "`pard_token`, `ptd_token_id`, or "
++                "`dflash_config.mask_token_id` specified in its config.json."
+             )
+ 
+         if self.pass_hidden_states_to_model:
+@@ -394,8 +399,7 @@
+     ) -> torch.Tensor:
+         batch_size = common_attn_metadata.batch_size()
+ 
+-        if self.method == "eagle3":
+-            assert isinstance(self.model, Eagle3LlamaForCausalLM)
++        if self.method in ("eagle3", "dflash"):
+             target_hidden_states = self.model.combine_hidden_states(
+                 target_hidden_states
+             )
+@@ -415,40 +419,17 @@
+ 
+         assert self.runner is not None
+ 
+-        per_layer_attn_metadata: dict[str, object] = {}
+-        for attn_group in self.draft_attn_groups:
+-            attn_metadata = attn_group.get_metadata_builder().build_for_drafting(
+-                common_attn_metadata=common_attn_metadata, draft_index=0
+-            )
+-            for layer_name in attn_group.layer_names:
+-                per_layer_attn_metadata[layer_name] = attn_metadata
++        per_layer_attn_metadata = self.build_per_layer_attn_metadata(
++            common_attn_metadata
++        )
+ 
+         cudagraph_runtime_mode, num_input_tokens, num_tokens_across_dp = (
+             self._determine_batch_execution_and_padding(num_tokens)
+         )
+ 
+-        if self.supports_mm_inputs:
+-            mm_embeds, is_mm_embed = mm_embed_inputs or (None, None)
+-
+-            self.inputs_embeds[:num_tokens] = self.model.embed_input_ids(
+-                self.input_ids[:num_tokens],
+-                multimodal_embeddings=mm_embeds,
+-                is_multimodal=is_mm_embed,
+-            )
+-
+-            input_ids = None
+-            inputs_embeds = self.inputs_embeds[:num_input_tokens]
+-        else:
+-            input_ids = self.input_ids[:num_input_tokens]
+-            inputs_embeds = None
+-
+-        model_kwargs = {
+-            "input_ids": input_ids,
+-            "positions": self._get_positions(num_input_tokens),
+-            "inputs_embeds": inputs_embeds,
+-        }
+-        if self.pass_hidden_states_to_model:
+-            model_kwargs["hidden_states"] = self.hidden_states[:num_input_tokens]
++        model_kwargs, slot_mapping_size = self.build_model_inputs_first_pass(
++            num_tokens, num_input_tokens, mm_embed_inputs
++        )
+ 
+         with set_forward_context(
+             per_layer_attn_metadata,
+@@ -457,7 +438,7 @@
+             num_tokens_across_dp=num_tokens_across_dp,
+             cudagraph_runtime_mode=cudagraph_runtime_mode,
+             slot_mapping=self._get_slot_mapping(
+-                num_input_tokens, common_attn_metadata.slot_mapping
++                slot_mapping_size, common_attn_metadata.slot_mapping
+             ),
+         ):
+             ret_hidden_states = self.model(**model_kwargs)
+@@ -803,8 +784,51 @@
+ 
+             return total_num_output_tokens, token_indices_to_sample, new_cad
+ 
++    def build_model_inputs_first_pass(
++        self,
++        num_tokens: int,
++        num_input_tokens: int,
++        mm_embed_inputs: tuple[list[torch.Tensor], torch.Tensor] | None,
++    ) -> tuple[dict[str, Any], int]:
++        if self.supports_mm_inputs:
++            mm_embeds, is_mm_embed = mm_embed_inputs or (None, None)
++
++            self.inputs_embeds[:num_tokens] = self.model.embed_input_ids(
++                self.input_ids[:num_tokens],
++                multimodal_embeddings=mm_embeds,
++                is_multimodal=is_mm_embed,
++            )
++
++            input_ids = None
++            inputs_embeds = self.inputs_embeds[:num_input_tokens]
++        else:
++            input_ids = self.input_ids[:num_input_tokens]
++            inputs_embeds = None
++
++        model_kwargs = {
++            "input_ids": input_ids,
++            "positions": self._get_positions(num_input_tokens),
++            "inputs_embeds": inputs_embeds,
++        }
++        if self.pass_hidden_states_to_model:
++            model_kwargs["hidden_states"] = self.hidden_states[:num_input_tokens]
++
++        return model_kwargs, num_input_tokens
++
++    def build_per_layer_attn_metadata(
++        self, common_attn_metadata: CommonAttentionMetadata, draft_index: int = 0
++    ) -> dict[str, object]:
++        per_layer_attn_metadata: dict[str, object] = {}
++        for attn_group in self.draft_attn_groups:
++            attn_metadata = attn_group.get_metadata_builder().build_for_drafting(
++                common_attn_metadata=common_attn_metadata, draft_index=draft_index
++            )
++            for layer_name in attn_group.layer_names:
++                per_layer_attn_metadata[layer_name] = attn_metadata
++        return per_layer_attn_metadata
++
+     def model_returns_tuple(self) -> bool:
+-        return self.method not in ("mtp", "draft_model")
++        return self.method not in ("mtp", "draft_model", "dflash")
+ 
+     def prepare_next_token_ids_cpu(
+         self,
+@@ -1546,7 +1570,7 @@
+         They might indicate this by setting "use_aux_hidden_state" to False
+         inside the "eagle_config" dict of their hf_config.
+         """
+-        if self.method != "eagle3":
++        if self.method not in ("eagle3", "dflash"):
+             return False
+         # Assume that eagle3 heads use aux hidden states by default
+         use_aux_hidden_state = True

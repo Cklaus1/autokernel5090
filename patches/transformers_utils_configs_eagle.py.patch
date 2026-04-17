@@ -1,0 +1,21 @@
+--- /tmp/vllm-clean/vllm/transformers_utils/configs/eagle.py	2026-04-01 16:16:40.590616746 -0400
++++ /usr/local/lib/python3.12/dist-packages/vllm/transformers_utils/configs/eagle.py	2026-03-16 09:36:57.726775692 -0400
+@@ -60,9 +60,17 @@
+                 else f"Eagle3{arch}"
+                 for arch in self.model.architectures
+             ]
++        elif method == "dflash":
++            assert self.model is not None, (
++                "model should not be None when method is dflash"
++            )
++            kwargs["architectures"] = [
++                arch if arch.startswith("DFlash") else f"DFlash{arch}"
++                for arch in self.model.architectures
++            ]
+         else:
+             raise ValueError(
+-                f"Invalid method {method}. Supported methods are eagle and eagle3."
++                f"Invalid method {method}. Supported methods are eagle, eagle3, and dflash."
+             )
+ 
+         super().__init__(**kwargs)

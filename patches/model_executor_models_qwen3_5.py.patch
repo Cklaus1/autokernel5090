@@ -1,0 +1,40 @@
+--- /tmp/vllm-clean/vllm/model_executor/models/qwen3_5.py	2026-04-01 16:16:40.578616869 -0400
++++ /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_5.py	2026-03-16 09:28:22.187479177 -0400
+@@ -75,6 +75,7 @@
+     IsHybrid,
+     MixtureOfExperts,
+     MultiModalEmbeddings,
++    SupportsEagle3,
+     SupportsLoRA,
+     SupportsPP,
+     _require_is_multimodal,
+@@ -335,6 +336,8 @@
+         else:
+             self.norm = PPMissingLayer()
+ 
++        self.aux_hidden_state_layers: tuple[int, ...] = ()
++
+     def load_fused_expert_weights(
+         self,
+         name: str,
+@@ -520,6 +523,7 @@
+     HasInnerState,
+     SupportsLoRA,
+     SupportsPP,
++    SupportsEagle3,
+ ):
+     packed_modules_mapping = {
+         "qkv_proj": [
+@@ -571,6 +575,12 @@
+             self.model.make_empty_intermediate_tensors
+         )
+ 
++    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
++        self.model.aux_hidden_state_layers = layers
++
++    def get_eagle3_aux_hidden_state_layers(self) -> tuple[int, ...]:
++        return self._get_default_eagle3_aux_hidden_state_layers()
++
+     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
+         return self.model.embed_input_ids(input_ids)
+ 

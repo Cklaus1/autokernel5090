@@ -1,0 +1,11 @@
+--- /tmp/vllm-clean/vllm/model_executor/models/registry.py	2026-04-01 16:16:40.578616869 -0400
++++ /usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/registry.py	2026-03-16 09:33:26.864598782 -0400
+@@ -533,6 +533,8 @@
+         "mistral_large_3_eagle",
+         "EagleMistralLarge3ForCausalLM",
+     ),
++    "DFlashDraftModel": ("qwen3_dflash", "DFlashQwen3ForCausalLM"),
++    "DFlashQwen3ForCausalLM": ("qwen3_dflash", "DFlashQwen3ForCausalLM"),
+     "EagleDeepSeekMTPModel": ("deepseek_eagle", "EagleDeepseekV3ForCausalLM"),
+     "DeepSeekMTPModel": ("deepseek_mtp", "DeepSeekMTP"),
+     "ErnieMTPModel": ("ernie_mtp", "ErnieMTP"),

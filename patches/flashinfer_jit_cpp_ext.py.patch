@@ -1,0 +1,42 @@
+--- /tmp/fi-clean/flashinfer/jit/cpp_ext.py	2026-04-01 16:18:05.677622757 -0400
++++ /usr/local/lib/python3.12/dist-packages/flashinfer/jit/cpp_ext.py	2026-03-16 09:01:32.387961744 -0400
+@@ -42,6 +42,11 @@
+ 
+ @functools.cache
+ def get_cuda_path() -> str:
++    # RTX 5090 (SM120) requires CUDA 12.9 for FP4/compute_120a support.
++    # Force CUDA 12.9 path to avoid CCCL incompatibility with system nvcc.
++    cuda_129 = "/usr/local/cuda-12.9"
++    if os.path.exists(os.path.join(cuda_129, "bin/nvcc")):
++        return cuda_129
+     cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+     if cuda_home is not None:
+         return cuda_home
+@@ -52,7 +57,7 @@
+             os.path.dirname(nvcc_path.stdout.decode("utf-8").strip())
+         )
+     else:
+-        cuda_home = "/usr/local/cuda"  # This default value is from: https://github.com/pytorch/pytorch/blob/ceb11a584d6b3fdc600358577d9bf2644f88def9/torch/utils/cpp_extension.py#L115
++        cuda_home = "/usr/local/cuda"
+         if not os.path.exists(cuda_home):
+             raise RuntimeError(
+                 f"Could not find nvcc and default {cuda_home=} doesn't exist"
+@@ -158,6 +163,8 @@
+     """Build CUDA compilation flags."""
+     cuda_cflags: List[str] = []
+     cc_env = os.environ.get("CC")
++    if cc_env is None and os.path.exists("/usr/bin/gcc-12"):
++        cc_env = "/usr/bin/gcc-12"  # nvcc 12.9 requires gcc <= 12
+     if cc_env is not None:
+         cuda_cflags += ["-ccbin", cc_env]
+     cuda_cflags += [
+@@ -229,7 +236,8 @@
+     if extra_ldflags is not None:
+         ldflags += extra_ldflags
+ 
+-    cxx = os.environ.get("CXX", "c++")
++    # Use gcc-12 for compatibility with nvcc 12.9 (gcc-13 is rejected)
++    cxx = os.environ.get("CXX", "/usr/bin/g++-12" if os.path.exists("/usr/bin/g++-12") else "c++")
+     nvcc = os.environ.get("FLASHINFER_NVCC", "$cuda_home/bin/nvcc")
+ 
+     lines = [
