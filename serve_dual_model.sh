@@ -1,5 +1,5 @@
 #!/bin/bash
-# Dual-model serving: Gemma4 26B (GPU 0) + Qwen3 30B (GPU 1)
+# Dual-model serving: Gemma4 26B (GPU 0) + Qwen3.6 35B (GPU 1)
 # Combined: ~30,000 tok/s aggregate
 #
 # Usage:
@@ -8,7 +8,7 @@
 #
 # Endpoints:
 #   GPU 0 :8000 — Gemma4 26B-A4B NVFP4 (stronger, 12,229 tok/s peak)
-#   GPU 1 :8001 — Qwen3 30B-A3B NVFP4 (faster, 17,426 tok/s peak)
+#   GPU 1 :8001 — Qwen3.6 35B-A3B NVFP4 (faster, TBD tok/s peak)
 
 set -euo pipefail
 
@@ -44,15 +44,15 @@ docker run -d --name vllm-gemma4 --gpus '"device=0"' --memory=80g \
     --served-model-name gemma-4-26B-A4B-it-NVFP4 \
     --kv-cache-dtype fp8 -cc.mode none -cc.cudagraph_mode full
 
-echo "=== Starting Qwen3 30B on GPU 1 (port 8001, cores ${CPUS_GPU1}) ==="
+echo "=== Starting Qwen3.6 35B on GPU 1 (port 8001, cores ${CPUS_GPU1}) ==="
 docker run -d --name vllm-qwen3 --gpus '"device=1"' --memory=80g \
     --cpuset-cpus="${CPUS_GPU1}" \
     -v ${MODELS_DIR}:/models:ro -p 8001:8000 \
     --entrypoint python3 ${IMAGE} \
     -m vllm.entrypoints.openai.api_server \
-    --model /models/Qwen3-30B-A3B-NVFP4 \
-    --quantization modelopt --max-model-len 4096 --port 8000 \
-    --served-model-name Qwen3-30B-A3B-NVFP4 \
+    --model /models/Qwen3.6-35B-A3B-FP8 \
+    --max-model-len 4096 --port 8000 \
+    --served-model-name Qwen3.6-35B-A3B-FP8 \
     --kv-cache-dtype fp8 -cc.mode none -cc.cudagraph_mode full
 
 echo ""
@@ -70,5 +70,5 @@ done
 echo ""
 echo "=== DUAL-MODEL SERVING READY ==="
 echo "  GPU 0 :8000 — Gemma4 26B (strong, 12k tok/s)"
-echo "  GPU 1 :8001 — Qwen3 30B (fast, 17k tok/s)"
+echo "  GPU 1 :8001 — Qwen3.6 35B (fast, 17k tok/s)"
 echo "  Combined: ~30k tok/s"

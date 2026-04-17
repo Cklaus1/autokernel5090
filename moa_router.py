@@ -3,7 +3,7 @@
 
 Routes requests to the best model based on task complexity:
   - STRONG (Gemma4 26B, GPU 0:8000): reasoning, architecture, complex code
-  - FAST (Qwen3 30B, GPU 1:8001): simple Q&A, formatting, test scaffolding
+  - FAST (Qwen3.6 35B, GPU 1:8001): simple Q&A, formatting, test scaffolding
 
 Usage:
     python moa_router.py "Write a merge sort with tests"
@@ -20,7 +20,7 @@ import aiohttp
 
 
 STRONG = {"url": "http://localhost:8000/v1", "model": "gemma-4-26B-A4B-it-NVFP4", "label": "Gemma4-26B"}
-FAST = {"url": "http://localhost:8001/v1", "model": "Qwen3-30B-A3B-NVFP4", "label": "Qwen3-30B"}
+FAST = {"url": "http://localhost:8001/v1", "model": "Qwen3.6-35B-A3B-FP8", "label": "Qwen3.6-35B"}
 
 # Keywords that signal hard tasks → route to STRONG model
 HARD_SIGNALS = [
