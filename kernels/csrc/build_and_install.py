@@ -43,8 +43,11 @@ def build_kernel():
     else:
         arch = "120"
 
-    # FP4 e2m1 PTX needs 'a' variant on nvcc < 13.0
-    if nvcc_ver < (13, 0):
+    # FP4 e2m1 PTX (`cvt.rn.satfinite.e2m1x2`) needs the 'a' arch variant
+    # on SM120 regardless of CUDA toolkit version.
+    if int(arch) >= 120:
+        arch_flag = f"-gencode=arch=compute_{arch}a,code=sm_{arch}a"
+    elif nvcc_ver < (13, 0):
         arch_flag = f"-gencode=arch=compute_{arch}a,code=sm_{arch}a"
     else:
         arch_flag = f"-gencode=arch=compute_{arch},code=sm_{arch}"
