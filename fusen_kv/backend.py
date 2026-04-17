@@ -572,7 +572,10 @@ class FusenKVImpl(AttentionImplBase):
 
         num_blocks = kv_cache.shape[0]
         block_size = kv_cache.shape[1]
-        max_slots = num_blocks * block_size
+        # Cap scale tensor to avoid OOM on large KV pools (PRO 6000: 1.15M slots
+        # × num_kv_heads × num_sb × 2 × fp16 = ~18 GB for scales alone).
+        # 256K slots covers 128 seqs × 4096 ctx / 64 block_size × 64 = plenty.
+        max_slots = min(num_blocks * block_size, 1024 * 1024)
         min_block = min(self.spec.k_scale_block, self.spec.v_scale_block)
         num_sb = self.head_size // min_block
 
