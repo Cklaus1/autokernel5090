@@ -1,0 +1,59 @@
+# LMCache Tier 2 — Per-Tenant Session Cache
+# Tag: W3_P3_lmcache_hierarchy_staged
+#
+# Role: Multi-turn dialog KV cache isolated per session.
+#       Prevents turn-2+ from re-prefilling the full conversation history.
+#
+# Sizing: 40 GB / ~524 MB per session → ~76 concurrent sessions before LRU eviction.
+#         Adequate for 30-user chat with ≤5 turns each (see lmcache_hierarchy_feasibility.md §3).
+#
+# NOTE on kv_namespace / session_id (API STATUS — read before deploying):
+#
+#   LMCache 0.4.3 does NOT expose a per-request kv_namespace override in its
+#   public vLLM connector API.  The vLLM adapter (lmcache_integration/vllm_v1_adapter.py)
+#   passes the full prefix token sequence to LMCacheEngine.retrieve() but does NOT
+#   forward per-request metadata such as session_id from the OpenAI /extra_body field.
+#
+#   The config-level `kv_namespace` key sets a STATIC namespace for the entire engine
+#   instance — it is NOT dynamically overridable per-request without upstream changes.
+#
+#   IMPLEMENTATION APPROACH (chosen: per-session engine pool — see launch script):
+#     The launcher maintains one LMCacheEngine per active session_id, bounded by the
+#     40 GB T2 pool.  A thin Python shim (see launch_gemma4_lmcache_hierarchy.sh §SHIM)
+#     intercepts the incoming request's `session_id` from the OpenAI extra_body and
+#     routes it to the matching engine.  This is the lowest-risk path using the 0.4.3
+#     public API without patching upstream.
+#
+#   UPSTREAM PATCH NEEDED (for native per-request kv_namespace):
+#     Add a `kv_namespace` field to `LMCacheEngineConfig` that can be set from
+#     `vllm_v1_adapter.py::get_input()` by reading `request.lora_request` or a
+#     custom metadata sidecar.  The adapter already receives the vLLM SequenceGroup;
+#     extracting `sequence_group.sampling_params.extra_data["session_id"]` and
+#     forwarding it to `engine.retrieve(namespace=session_id)` would be ~15 LoC in
+#     `vllm_v1_adapter.py` + a matching kwarg in `LMCacheEngine.retrieve()` /
+#     `LocalCPUBackend.get()`.  No schema changes needed — a single PR against
+#     LMCache main branch (github.com/LMCache/LMCache) would land this feature.
+
+# ── Engine configuration ───────────────────────────────────────────────────────
+chunk_size: 256           # token chunks; matches T1 for compatible hash keys
+local_cpu: true
+max_local_cpu_size: 40.0  # GB — Tier 2 pool cap
+enable_p2p: false         # no CUDA IPC — WSL2 safe
+save_decode_cache: true   # persist decode-phase KV for multi-turn turn-2+ hit
+
+# Eviction: LRU (many sessions at varying activity levels; recency dominates)
+eviction_policy: lru
+
+# TTL: 3600 s (1 hr idle expiry).  LMCache 0.4.3 honors kv_ttl_seconds in
+# LocalCPUBackend — inactive session chunks expire without manual eviction.
+kv_ttl_seconds: 3600
+
+# Static namespace for THIS engine instance (overridden per session via pool
+# pattern in the launcher — see launch_gemma4_lmcache_hierarchy.sh).
+kv_namespace: "t2_session_pool"
+
+# Remote write-through: T2 does NOT write through to T3.
+# Only T1 (shared prefix engine) writes through so that globally-hot chunks
+# (system prompts, RAG context) propagate to the remote tier.
+# Session-private dialog KV MUST NOT pollute the shared T3 store.
+remote_url: null

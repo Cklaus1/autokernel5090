@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# REFERENCED-IN-PLANS-ONLY — run manually inside Docker container (see wire_fused_norm_fp4.py usage notes); no .sh launcher auto-invokes this; see plans/dead_code_audit_20260419.md
 """
 Apply fused_add_rms_norm patch to Gemma4 decoder layer forward.
 

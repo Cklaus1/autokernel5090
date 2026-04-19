@@ -51,6 +51,11 @@ import torch.nn as nn
 
 logger = logging.getLogger(__name__)
 
+# [FIXED-SILENT-NONE] Fix 3: per-layer silent _fused_*_fn=None now emits WARNING.
+# Ref: plans/silent_none_sweep_20260419.md §C2, plans/KILL_PATTERNS.md §P1
+logger.info("[FIXED-SILENT-NONE] fused_norm_fp4_integration: missing .backend "
+            "on quant_method now emits WARNING per layer instead of silent None")
+
 
 def _create_fused_norm_quant(norm_layer, create_fp4_output_tensors_fn):
     """
@@ -165,6 +170,13 @@ def apply_fused_norm_fp4_patch():
                     else:
                         self._fused_attn_fn = None
                 else:
+                    # [FIXED-SILENT-NONE] Fix 3 — Ref: plans/silent_none_sweep_20260419.md §C2, plans/KILL_PATTERNS.md §P1
+                    logger.warning(
+                        "[FUSED-NORM-GEMMA4] fallthrough on %s — expected .backend attr "
+                        "(layer=%s); attn fusion DISABLED for this layer",
+                        type(qkv_qm).__name__,
+                        getattr(self, 'layer_idx', '?'),
+                    )
                     self._fused_attn_fn = None
             except Exception as e:
                 logger.warning("Failed to init fused attn: %s", e)
@@ -183,6 +195,13 @@ def apply_fused_norm_fp4_patch():
                     else:
                         self._fused_mlp_fn = None
                 else:
+                    # [FIXED-SILENT-NONE] Fix 3 — Ref: plans/silent_none_sweep_20260419.md §C2, plans/KILL_PATTERNS.md §P1
+                    logger.warning(
+                        "[FUSED-NORM-GEMMA4] fallthrough on %s — expected .backend attr "
+                        "(layer=%s); MLP fusion DISABLED for this layer",
+                        type(mlp_qm).__name__,
+                        getattr(self, 'layer_idx', '?'),
+                    )
                     self._fused_mlp_fn = None
             except Exception as e:
                 logger.warning("Failed to init fused mlp: %s", e)

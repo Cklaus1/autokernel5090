@@ -24,6 +24,10 @@ import importlib
 logger = logging.getLogger("fused_launcher")
 logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
 
+# [FIXED-SILENT-NONE] Fix 1: _FUSED_OP silent-None → RuntimeWarning elevated to WARNING.
+# Ref: plans/silent_none_sweep_20260419.md §C3, plans/KILL_PATTERNS.md §P1
+logger.info("[FIXED-SILENT-NONE] launch_fused_vllm: _FUSED_OP=None fallback now emits RuntimeWarning")
+
 # ============================================================
 # Step 1: Load the fused kernel .so
 # ============================================================
@@ -84,6 +88,15 @@ if _os_fused.path.exists(_FUSED_SO) and not hasattr(_torch_fused.ops._C, "rms_no
     except Exception:
         pass
 _FUSED_OP = getattr(_torch_fused.ops._C, "rms_norm_dynamic_fp4_quant", None)
+# [FIXED-SILENT-NONE] Fix 1 — Ref: plans/silent_none_sweep_20260419.md §C3, plans/KILL_PATTERNS.md §P1
+if _FUSED_OP is None:
+    import warnings as _warn_mod
+    _warn_mod.warn(
+        "[FUSED-LAUNCH] rms_norm_dynamic_fp4_quant not in subprocess — "
+        "unfused baseline active (FUSED_KERNEL_SO=" + _FUSED_SO + ")",
+        RuntimeWarning,
+        stacklevel=1,
+    )
 if _FUSED_OP is not None:
     try:
         @_torch_fused.library.register_fake("_C::rms_norm_dynamic_fp4_quant")

@@ -1,0 +1,78 @@
+{
+  "model": "Qwen3-30B-A3B-NVFP4",
+  "max_tokens": 128,
+  "results": [
+    {
+      "concurrency": 64,
+      "n_requests": 64,
+      "max_tokens": 128,
+      "wall_s": 5.78,
+      "gen_tok_s": 1418.4,
+      "total_tok_s": 2038.9,
+      "p50_latency_s": 5.73,
+      "errors": 0,
+      "prompt_tokens": 3584,
+      "gen_tokens": 8192
+    },
+    {
+      "concurrency": 128,
+      "n_requests": 128,
+      "max_tokens": 128,
+      "wall_s": 1.56,
+      "gen_tok_s": 10529.7,
+      "total_tok_s": 15136.4,
+      "p50_latency_s": 1.34,
+      "errors": 0,
+      "prompt_tokens": 7168,
+      "gen_tokens": 16384
+    },
+    {
+      "concurrency": 256,
+      "n_requests": 256,
+      "max_tokens": 128,
+      "wall_s": 3.44,
+      "gen_tok_s": 9518.0,
+      "total_tok_s": 13682.1,
+      "p50_latency_s": 3.13,
+      "errors": 0,
+      "prompt_tokens": 14336,
+      "gen_tokens": 32768
+    },
+    {
+      "concurrency": 384,
+      "n_requests": 384,
+      "max_tokens": 128,
+      "wall_s": 3.96,
+      "gen_tok_s": 12415.0,
+      "total_tok_s": 17849.5,
+      "p50_latency_s": 3.55,
+      "errors": 0,
+      "prompt_tokens": 21504,
+      "gen_tokens": 49126
+    },
+    {
+      "concurrency": 512,
+      "n_requests": 512,
+      "max_tokens": 128,
+      "wall_s": 4.45,
+      "gen_tok_s": 14707.0,
+      "total_tok_s": 21148.3,
+      "p50_latency_s": 3.95,
+      "errors": 0,
+      "prompt_tokens": 28672,
+      "gen_tokens": 65465
+    },
+    {
+      "concurrency": 768,
+      "n_requests": 768,
+      "max_tokens": 128,
+      "wall_s": 5.9,
+      "gen_tok_s": 16636.5,
+      "total_tok_s": 23922.8,
+      "p50_latency_s": 5.25,
+      "errors": 0,
+      "prompt_tokens": 43008,
+      "gen_tokens": 98199
+    }
+  ]
+}

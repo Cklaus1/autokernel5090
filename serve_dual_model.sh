@@ -34,26 +34,50 @@ CPUS_GPU0="0-15"    # CCD 0
 CPUS_GPU1="16-31"   # CCD 1
 
 echo "=== Starting Gemma4 26B on GPU 0 (port 8000, cores ${CPUS_GPU0}) ==="
+# WSL2 GPU isolation fix (KILL_PATTERNS.md §P4): --gpus alone leaks; must also set
+# NVIDIA_VISIBLE_DEVICES (host mapping) + CUDA_VISIBLE_DEVICES=0 (container-internal view).
 docker run -d --name vllm-gemma4 --gpus '"device=0"' --memory=80g \
     --cpuset-cpus="${CPUS_GPU0}" \
+    -e NVIDIA_VISIBLE_DEVICES=0 \
+    -e CUDA_VISIBLE_DEVICES=0 \
     -v ${MODELS_DIR}:/models:ro -p 8000:8000 \
-    --entrypoint python3 ${IMAGE} \
-    -m vllm.entrypoints.openai.api_server \
+    --entrypoint bash ${IMAGE} -c \
+    'python3 -c "
+import torch
+uuid = torch.cuda.get_device_properties(0).uuid
+n = torch.cuda.device_count()
+print(f'"'"'[GPU-ISOLATION-CHECK] visible={n} uuid={uuid}'"'"', flush=True)
+" 2>&1 || true
+exec python3 -m vllm.entrypoints.openai.api_server \
     --model /models/gemma-4-26B-A4B-it-NVFP4-modelopt \
     --quantization modelopt --max-model-len 4096 --port 8000 \
     --served-model-name gemma-4-26B-A4B-it-NVFP4 \
-    --kv-cache-dtype fp8 -cc.mode none -cc.cudagraph_mode full
+    --kv-cache-dtype fp8 -cc.mode none -cc.cudagraph_mode full'
 
 echo "=== Starting Qwen3.6 35B on GPU 1 (port 8001, cores ${CPUS_GPU1}) ==="
+# WSL2 GPU isolation fix (W6 corrected — KILL_PATTERNS.md §P4):
+# WSL2 sets no-cgroups=true so --gpus 'device=N' cannot enforce cgroup device isolation.
+# Both containers see all GPU device files. CUDA_VISIBLE_DEVICES=1 (NOT 0) is required
+# for the GPU 1 container because it selects by HOST PCIe enumeration index.
+# Using CUDA_VISIBLE_DEVICES=0 in both containers sends both to host GPU 0.
+# Run test_wsl2_gpu_isolation.sh e to confirm distinct UUIDs before benching.
 docker run -d --name vllm-qwen3 --gpus '"device=1"' --memory=80g \
     --cpuset-cpus="${CPUS_GPU1}" \
+    -e NVIDIA_VISIBLE_DEVICES=1 \
+    -e CUDA_VISIBLE_DEVICES=1 \
     -v ${MODELS_DIR}:/models:ro -p 8001:8000 \
-    --entrypoint python3 ${IMAGE} \
-    -m vllm.entrypoints.openai.api_server \
+    --entrypoint bash ${IMAGE} -c \
+    'python3 -c "
+import torch
+uuid = torch.cuda.get_device_properties(0).uuid
+n = torch.cuda.device_count()
+print(f'"'"'[GPU-ISOLATION-CHECK] visible={n} uuid={uuid}'"'"', flush=True)
+" 2>&1 || true
+exec python3 -m vllm.entrypoints.openai.api_server \
     --model /models/Qwen3.6-35B-A3B-FP8 \
     --max-model-len 4096 --port 8000 \
     --served-model-name Qwen3.6-35B-A3B-FP8 \
-    --kv-cache-dtype fp8 -cc.mode none -cc.cudagraph_mode full
+    --kv-cache-dtype fp8 -cc.mode none -cc.cudagraph_mode full'
 
 echo ""
 echo "Waiting for servers..."

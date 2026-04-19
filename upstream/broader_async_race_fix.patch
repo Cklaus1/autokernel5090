@@ -1,0 +1,87 @@
+From: vLLM FusenCache team
+Subject: [PATCH] fix(v1/gemma4): two more async-scheduling races (root_size + get_output ordering)
+
+Two additional sites exhibiting the same async-scheduling / CUDA-graph race
+class identified in Discovery #54:
+
+1. Gemma4Router.forward emits a runtime .to(dtype) kernel on the `root_size`
+   register_buffer.  Under async scheduling + cudagraph_mode=FULL the buffer's
+   device-cast kernel can race with the next iteration's input-prep thread,
+   producing cudaErrorIllegalAddress at C>=64.  Fix: store root_size as a
+   plain Python float so forward() multiplies by a scalar literal — zero
+   device-side kernels, zero race surface.
+
+2. AsyncGPUModelRunnerOutput.get_output reads sampled_token_ids_cpu.shape[-1]
+   BEFORE calling async_copy_ready_event.synchronize().  In piecewise graph
+   mode the non-blocking copy-stream work may not yet be committed to the CUDA
+   runtime, making the CPU buffer a dangling reference at that point.  Fix:
+   swap the two lines so synchronize() fires first.
+
+Both fixes are surgical (7 lines net-zero diff across 2 files).
+
+Companion to:
+  - fix(v1): synchronize model forward completion before next step's input prep
+    (Discovery #54, synchronize_input_prep() fence in gpu_model_runner.py)
+  - fix(models/gemma4_mm): avoid aliasing scheduler's is_mm_embed double-buffer
+    in embed_input_ids (§4c1, is_mm_embed_buffers GPU-storage alias)
+
+---
+ vllm/model_executor/models/gemma4.py    | 9 ++++-----
+ vllm/v1/worker/gpu_model_runner.py      | 5 +++--
+ 2 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/vllm/model_executor/models/gemma4.py b/vllm/model_executor/models/gemma4.py
+--- a/vllm/model_executor/models/gemma4.py
++++ b/vllm/model_executor/models/gemma4.py
+@@ -174,12 +174,11 @@ class Gemma4Router(nn.Module):
+         super().__init__()
+         self.hidden_size = config.hidden_size
+
+         # RMSNorm without learned weight — pure normalization only
+         self.norm = RMSNorm(self.hidden_size, eps=config.rms_norm_eps, has_weight=False)
+         # Per-dimension learned scale, applied after norm + root_size
+         self.scale = nn.Parameter(torch.ones(self.hidden_size))
+-        # Constant 1/sqrt(hidden_size) scaling factor
+-        self.register_buffer(
+-            "root_size",
+-            torch.tensor(self.hidden_size**-0.5),
+-            persistent=False,
+-        )
++        # Store as a plain Python float so forward() multiplies by a scalar
++        # literal — no device-side cast kernel, no async-scheduling race.
++        # (A register_buffer of dtype float32 requires .to(x.dtype) in
++        # forward() which emits a kernel that races under CUDA-graph FULL.)
++        self._root_size_scalar: float = self.hidden_size**-0.5
+         # Project to expert logits; replicated across TP for consistent routing
+         # GateLinear supports bf16 W/A → fp32 output, which is important
+         # because the topk kernel often needs fp32 for stable routing.
+@@ -196,7 +195,7 @@ class Gemma4Router(nn.Module):
+     def forward(self, x: torch.Tensor) -> torch.Tensor:
+         """Returns raw router logits [T, E]."""
+         x = self.norm(x)
+-        x = x * self.root_size.to(x.dtype)
++        x = x * self._root_size_scalar
+         x = x * self.scale.to(x.dtype)
+         router_logits, _ = self.proj(x)
+         return router_logits
+
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -256,9 +256,10 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
+     def get_output(self) -> ModelRunnerOutput:
+         """Copy the device tensors to the host and return a ModelRunnerOutput.
+
+         This function blocks until the copy is finished.
+         """
+-        max_gen_len = self.sampled_token_ids_cpu.shape[-1]
+         self.async_copy_ready_event.synchronize()
++        # Read .shape only after the event fires: in piecewise-graph mode the
++        # non-blocking copy may not be committed to the CUDA runtime yet when
++        # get_output() is first called, making the CPU buffer a dangling ref.
++        max_gen_len = self.sampled_token_ids_cpu.shape[-1]
+
+         # Release the device tensors once the copy has completed.
+         del self._logprobs_tensors
+--
+2.34.1

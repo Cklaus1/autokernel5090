@@ -9,6 +9,9 @@ SM120) that benefit all vLLM users running NVFP4 or MoE models.
 |------|------|--------|
 | `PR_fused_norm_fp4.md` | Code PR | 2.95x faster RMSNorm+FP4 quant, ~12% end-to-end gain |
 | `PR_moe_inductor_default.md` | Feature request / bug | 2.1x peak throughput with two flags |
+| `PR_async_scheduling_fix.md` | Bug PR | Stream-level event fence in `synchronize_input_prep()` for async-scheduling + CUDA-graph race; unblocks FusenCache piecewise path (Discovery #54) |
+| `PR_gemma4_embed_input_ids_async_race.md` + `gemma4_embed_input_ids_fix.patch` | Bug PR | Fix `cudaErrorIllegalAddress` in `Gemma4ForConditionalGeneration.embed_input_ids` at C>=4 on vLLM main (2026-04-18). Root cause: `is_mm_embed_buffers` GPU storage aliases across async iters under CUDA graphs. Two-behavior fix (text-only fast path + `.clone()` + `non_blocking=False`). |
+| `PR_broader_async_race.md` + `broader_async_race_fix.patch` | Bug PR (§4c₂) | Fix two more async-scheduling races: `Gemma4Router.root_size.to(x.dtype)` (FULL_DECODE_ONLY, C≥64) and `AsyncGPUModelRunnerOutput.get_output()` shape-read before event sync (piecewise). 7-line diff, 2 files. |
 
 ## PR 1 — Fused RMSNorm + Dynamic FP4 Block Quantization
 
@@ -102,3 +105,63 @@ The kernel source is at:
 
 The torch bindings patch is at:
 `/root/projects/autokernel/kernels/csrc/torch_bindings_patch.cpp`
+
+---
+
+## Filing the PRs
+
+`gh` is installed at `/usr/bin/gh`. Authenticate once:
+
+```bash
+gh auth login   # interactive: choose github.com → HTTPS → browser
+```
+
+### Fork + patch-based PR (recommended for `PR_gemma4_embed_input_ids_async_race.md`)
+
+```bash
+# One-time setup
+gh repo fork vllm-project/vllm --clone --remote
+cd vllm
+
+# Apply the fix
+git checkout -b fix/gemma4-embed-input-ids-async-race
+git apply /home/cklaus/projects/autokernel/upstream/gemma4_embed_input_ids_fix.patch
+git commit -am "fix(models/gemma4_mm): avoid aliasing scheduler's is_mm_embed double-buffer in embed_input_ids"
+git push -u origin fix/gemma4-embed-input-ids-async-race
+
+# Open the PR with the pre-written body
+gh pr create --repo vllm-project/vllm \
+  --title "Fix CUDA illegal-address in Gemma4MultiModal.embed_input_ids under concurrent batched inference" \
+  --body-file /home/cklaus/projects/autokernel/upstream/PR_gemma4_embed_input_ids_async_race.md
+```
+
+### Issue-only (for the design-level items)
+
+```bash
+gh issue create --repo vllm-project/vllm \
+  --title "Default to no-inductor + full CUDA graphs for NVFP4 MoE serving" \
+  --body-file /home/cklaus/projects/autokernel/upstream/PR_moe_inductor_default.md
+```
+
+The other PRs (`fused_norm_fp4`, `async_scheduling_fix`) need a local vLLM source tree to craft the diff — they land kernels + edit multiple files, which the markdown describes but doesn't contain as a unified patch.
+
+### §4c₂ — Broader async-scheduling race (Gemma4Router + get_output)
+
+```bash
+# Inside the already-cloned vllm fork (from §4c₁ step above)
+git checkout main && git pull upstream main
+git checkout -b fix/gemma4-async-race-router-and-get-output
+
+# First check for the §4c₁ PR to link it
+C1_PR=$(gh pr list --author "@me" --repo vllm-project/vllm --state open \
+  --json number,title --jq '.[] | select(.title | contains("embed_input_ids")) | "#\(.number)"')
+echo "§4c₁ PR: $C1_PR"   # note the number for the body
+
+git apply /home/cklaus/projects/autokernel/upstream/broader_async_race_fix.patch
+git commit -am "fix(v1/gemma4): two more async-scheduling races — root_size scalar and get_output ordering"
+git push -u origin fix/gemma4-async-race-router-and-get-output
+
+gh pr create --repo vllm-project/vllm \
+  --title "fix(v1/gemma4): two more async-scheduling races (Gemma4Router.root_size + get_output ordering)" \
+  --body-file /home/cklaus/projects/autokernel/upstream/PR_broader_async_race.md
+```

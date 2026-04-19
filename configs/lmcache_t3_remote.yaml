@@ -1,0 +1,53 @@
+# LMCache Tier 3 — Remote Shared Cache (standalone server config)
+# Tag: W3_P3_lmcache_hierarchy_staged
+#
+# Role: Globally-hot KV chunks (system prompts, RAG context) shared across
+#       all vLLM replicas on the same node.  First replica pays full prefill;
+#       subsequent replicas restore from T3 (~10 ms vs ~140 ms for 2k-tok RAG).
+#
+# Launch: See launch_lmcache_remote.sh — starts the standalone LMCache server
+#         process listening on tcp://127.0.0.1:8200 before vLLM starts.
+#
+# Sizing: 60 GB for ~120 distinct 500-MB system prompts / RAG chunk sets.
+#
+# NOTE on LFU eviction (API STATUS):
+#   LMCache 0.4.3 supports `eviction_policy: lfu` in the storage backend config.
+#   LFU is implemented in lmcache/storage_backend/local_cpu_backend.py via
+#   sortedcontainers.SortedDict keyed by (access_count, last_access_time).
+#   The 24-hr TTL floor is enforced by `kv_ttl_seconds: 86400` — chunks below
+#   the floor will not be evicted regardless of frequency rank.
+#   Confirmed: both fields are present in LMCacheEngineConfig dataclass (0.4.3).
+#
+# NOTE on standalone server mode:
+#   `python -m lmcache.server` is the correct entry point in 0.4.3.
+#   It reads this YAML via --config and exposes a ZMQ/TCP RPC socket.
+#   The vLLM-side T1 engine connects to it via `remote_url: "tcp://127.0.0.1:8200"`.
+#   The T3 server itself runs without vLLM — it is a pure Python KV store process.
+
+# ── Server-side engine configuration ──────────────────────────────────────────
+chunk_size: 256             # must match T1 chunk_size for hash-compatible keys
+local_cpu: true
+max_local_cpu_size: 60.0    # GB — Tier 3 pool cap (entire allocation is in this process)
+enable_p2p: false
+save_decode_cache: false     # decode KV is request-local; only save prefill prefix KV
+
+# Eviction: LFU — globally-hot prompts reused thousands of times across all sessions.
+# Frequency dominates recency at this tier.
+eviction_policy: lfu
+
+# TTL floor: 24 hr.  Ultra-hot system prompts (e.g. the shared FusenSolver prompt)
+# are guaranteed to survive at least one full working day even under LFU pressure.
+kv_ttl_seconds: 86400
+
+# Static namespace for T3; all clients (vLLM T1 write-through) share one namespace.
+kv_namespace: "t3_shared_global"
+
+# No upstream remote — T3 is the terminal tier on this node.
+remote_url: null
+
+# ── Network binding ───────────────────────────────────────────────────────────
+# These fields are read by `python -m lmcache.server` (not by LMCacheEngine directly).
+# See lmcache/server.py (0.4.3) — host/port override CLI args; YAML keys serve as
+# defaults when the CLI flag is omitted.
+host: "127.0.0.1"
+port: 8200

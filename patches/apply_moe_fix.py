@@ -1,3 +1,4 @@
+# REFERENCED-IN-PLANS-ONLY — manually run inside Docker; no launcher auto-invokes this; see plans/dead_code_audit_20260419.md
 """Apply the MoE per-expert loop fix to bypass SM120 grouped GEMM bug."""
 import re
 

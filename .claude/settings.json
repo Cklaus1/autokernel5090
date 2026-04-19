@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash",
+      "Bash(docker*)",
+      "Bash(docker run*)",
+      "Bash(docker exec*)",
+      "Bash(docker rm*)",
+      "Bash(docker stop*)",
+      "Bash(docker ps*)",
+      "Bash(docker logs*)",
+      "Bash(docker inspect*)",
+      "Bash(nvidia-smi*)",
+      "Bash(curl*)",
+      "Bash(ss*)",
+      "Bash(pip install*)",
+      "Bash(nvcc*)",
+      "Bash(python3*)",
+      "Bash(uv run*)",
+      "Bash(for i*)",
+      "Bash(bash launch*)",
+      "Bash(bash serve*)",
+      "Bash(MODE=*)",
+      "Bash(NAME=*)",
+      "Write",
+      "Edit",
+      "Read",
+      "Glob",
+      "Grep"
+    ]
+  }
+}

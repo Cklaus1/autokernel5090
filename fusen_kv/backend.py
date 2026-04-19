@@ -33,6 +33,10 @@ def _can_sync():
 _FUSENCACHE_CPP_SO = "/tmp/build_fusencache/fusencache_decode.so"
 _HAS_CPP_DECODE = False
 _HAS_CPP_STORE = False
+# [FIXED-SILENT-NONE] Fix 4: bare except AttributeError: pass replaced with WARNING.
+# Ref: plans/silent_none_sweep_20260419.md §C4, plans/KILL_PATTERNS.md §P1
+logging.getLogger(__name__).info(
+    "[FIXED-SILENT-NONE] fusen_kv/backend: store_kv AttributeError now emits WARNING")
 try:
     if os.path.exists(_FUSENCACHE_CPP_SO):
         torch.ops.load_library(_FUSENCACHE_CPP_SO)
@@ -47,7 +51,12 @@ try:
         logging.getLogger(__name__).info(
             "FusenCache C++ store kernel loaded (CUDA graph safe)")
     except AttributeError:
-        pass
+        _HAS_CPP_STORE = False
+        logging.getLogger(__name__).warning(
+            "[FUSEN-KV] C++ store_kv op not registered in %s — "
+            "Triton fallback active (reverts the CUDA-graph-safe promise)",
+            _FUSENCACHE_CPP_SO,
+        )
 except Exception as e:
     logging.getLogger(__name__).warning(
         "FusenCache C++ kernels not available, falling back to Triton: %s", e)
@@ -448,6 +457,115 @@ class FusenKVImpl(AttentionImplBase):
             _max_B,
             self._shared_mid_out.nbytes / (1024 * 1024),
             self._shared_output.nbytes / (1024 * 1024),
+        )
+
+        # ---- T1-B FIX (W5 shadow-tensor fix): Pre-allocated shadow metadata ----
+        # Original T1-B patch used .copy_() into shadow buffers to avoid the
+        # default-pool .clone() that conflicts with piecewise CUDA graph
+        # private memory pools. It crashed at C>4 because the shadow buffers
+        # were under-sized (defaulted to _max_B/max_num_seqs for token-indexed
+        # tensors). At mixed-batch scheduling, padded_T can exceed max_num_seqs
+        # AND max_num_batched_tokens due to CUDA graph capture padding.
+        #
+        # Sizing rule (W5 audit recommendation): use a bounded sentinel,
+        #   shadow_cap = max(max_num_seqs, max_num_batched_tokens,
+        #                    max_cudagraph_capture_size) + 4096
+        # The +4096 provides slack against future scheduler padding changes.
+        _max_seqs = _max_B
+        _cfg_max_num_seqs = _max_B
+        _cfg_max_num_batched_tokens = _max_B
+        _cfg_max_cg = _max_B
+        try:
+            if vllm_cfg and vllm_cfg.scheduler_config:
+                _mbt = getattr(vllm_cfg.scheduler_config,
+                               'max_num_batched_tokens', None)
+                if _mbt and _mbt > 0:
+                    _cfg_max_num_batched_tokens = _mbt
+                _mns = getattr(vllm_cfg.scheduler_config,
+                               'max_num_seqs', None)
+                if _mns and _mns > 0:
+                    _cfg_max_num_seqs = _mns
+        except Exception:
+            pass
+        try:
+            if vllm_cfg and vllm_cfg.compilation_config:
+                _cg = getattr(vllm_cfg.compilation_config,
+                              'max_cudagraph_capture_size', None)
+                if _cg and _cg > 0:
+                    _cfg_max_cg = _cg
+        except Exception:
+            pass
+        _SHADOW_SLACK = 4096
+        _shadow_cap = max(_cfg_max_num_seqs, _cfg_max_num_batched_tokens,
+                          _cfg_max_cg, _max_B) + _SHADOW_SLACK
+        _max_tokens = _shadow_cap
+        _max_seqs = max(_max_seqs, _cfg_max_num_seqs) + _SHADOW_SLACK
+
+        # Block table max columns from cache config
+        _max_blocks_per_seq = 256  # safe default
+        try:
+            if vllm_cfg and vllm_cfg.cache_config:
+                _bl = getattr(vllm_cfg.cache_config, 'num_gpu_blocks', None)
+                if _bl and _bl > 0:
+                    _max_blocks_per_seq = min(_bl, 4096)
+        except Exception:
+            pass
+
+        # Shadow metadata: fixed-address buffers for async race protection.
+        # Sized to bounded-sentinel: safe against any scheduler padding within
+        # the configured limits, plus 4096 slack.
+        self._shadow_block_table = torch.empty(
+            _max_seqs, _max_blocks_per_seq,
+            dtype=torch.int32, device='cuda',
+        )
+        self._shadow_seq_lens = torch.empty(
+            _max_seqs, dtype=torch.int32, device='cuda',
+        )
+        self._shadow_slot_mapping = torch.empty(
+            _max_tokens, dtype=torch.int64, device='cuda',
+        )
+        self._shadow_query_start_loc = torch.empty(
+            _max_seqs + 1, dtype=torch.int64, device='cuda',
+        )
+
+        # Universal decode path: pre-allocated intermediates (token-indexed).
+        self._ud_token_positions = torch.arange(
+            _max_tokens, device='cuda', dtype=torch.int64,
+        )
+        self._ud_token_request_ids = torch.empty(
+            _max_tokens, dtype=torch.int64, device='cuda',
+        )
+        self._ud_pseudo_seq_lens = torch.empty(
+            _max_tokens, dtype=torch.int32, device='cuda',
+        )
+        self._ud_token_block_table = torch.empty(
+            _max_tokens, _max_blocks_per_seq,
+            dtype=torch.int32, device='cuda',
+        )
+        self._shadow_max_seqs = _max_seqs
+        self._shadow_max_tokens = _max_tokens
+        self._shadow_max_blocks = _max_blocks_per_seq
+        # Refs to previous step's cloned views — retained so Python GC doesn't
+        # free them while GPU is still reading. Replaced each step.
+        self._prev_block_table = None
+        self._prev_seq_lens = None
+        self._prev_slot_mapping = None
+        self._prev_query_start_loc = None
+        logger.info(
+            "FusenKV T1-B (W5): shadow metadata allocated "
+            "(max_seqs=%d, max_tokens=%d, max_blocks=%d, "
+            "shadow_mem=%.1f MiB, cfg[max_num_seqs=%d, "
+            "max_num_batched_tokens=%d, max_cg=%d])",
+            _max_seqs, _max_tokens, _max_blocks_per_seq,
+            (self._shadow_block_table.nbytes +
+             self._shadow_seq_lens.nbytes +
+             self._shadow_slot_mapping.nbytes +
+             self._shadow_query_start_loc.nbytes +
+             self._ud_token_positions.nbytes +
+             self._ud_token_request_ids.nbytes +
+             self._ud_pseudo_seq_lens.nbytes +
+             self._ud_token_block_table.nbytes) / (1024 * 1024),
+            _cfg_max_num_seqs, _cfg_max_num_batched_tokens, _cfg_max_cg,
         )
 
         # Try C++ decode kernel first (CUDA graph compatible, no Triton JIT)
@@ -883,16 +1001,81 @@ class FusenKVImpl(AttentionImplBase):
             # we start reusing shared decode buffers (mid_out, output).
             torch.cuda.current_stream().wait_event(self._prev_step_event)
 
-            # Clone metadata to isolate from async scheduler writes.
-            # This is the key fix: our kernels read clones, CPU modifies originals.
-            _block_table = attn_metadata.block_table.clone() if attn_metadata.block_table is not None else None
-            _seq_lens = attn_metadata.seq_lens.clone() if attn_metadata.seq_lens is not None else None
-            _slot_mapping = attn_metadata.slot_mapping.clone() if attn_metadata.slot_mapping is not None else None
-            _query_start_loc = attn_metadata.query_start_loc.clone() if attn_metadata.query_start_loc is not None else None
+            # ---- T1-B FIX (W5): Shadow-buffer metadata isolation ----
+            # Instead of .clone() (allocates from default pool, incompatible
+            # with piecewise CUDA graph private pools), copy into pre-allocated
+            # fixed-address shadow buffers. Three-part audit fix:
+            #   (A) Buffers were sized at __init__ to bounded sentinel =
+            #       max(max_num_seqs, max_num_batched_tokens, max_cg) + 4096.
+            #   (B) assert dst.shape == src.shape before every .copy_() so a
+            #       size mismatch raises Python, not cudaErrorIllegalAddress.
+            #   (C) .clone() the returned views so external consumers can't
+            #       alias back into self._shadow_* across graph-capture iters
+            #       (P8 — view-vs-clone under CUDA graph capture). The
+            #       fixed-address shadow is just a staging buffer; the clone
+            #       receives a fresh allocation each step. This restores the
+            #       pre-T1B isolation semantics without using attn_metadata's
+            #       original tensors directly (which the async scheduler
+            #       still mutates).
 
-            # Retain references to clones so Python GC doesn't free them while
-            # the GPU is still reading them. The previous step's clones are now
-            # safe to release (the event fence above guarantees completion).
+            def _shadow_copy(src, dst_buf, name):
+                if src is None:
+                    return None
+                # Shape-check: view dst to exactly src.shape, assert, copy,
+                # then clone the view so the caller holds a tensor that is
+                # NOT aliased to the persistent shadow buffer.
+                if src.ndim == 1:
+                    if src.shape[0] > dst_buf.shape[0]:
+                        raise RuntimeError(
+                            f"FusenKV shadow buffer {name} too small: "
+                            f"src.shape={tuple(src.shape)} "
+                            f"dst_cap={dst_buf.shape[0]} "
+                            f"(rebuild with larger _SHADOW_SLACK)")
+                    dst = dst_buf[:src.shape[0]]
+                elif src.ndim == 2:
+                    if (src.shape[0] > dst_buf.shape[0] or
+                            src.shape[1] > dst_buf.shape[1]):
+                        raise RuntimeError(
+                            f"FusenKV shadow buffer {name} too small: "
+                            f"src.shape={tuple(src.shape)} "
+                            f"dst_cap={tuple(dst_buf.shape)} "
+                            f"(rebuild with larger _SHADOW_SLACK)")
+                    dst = dst_buf[:src.shape[0], :src.shape[1]]
+                else:
+                    raise RuntimeError(
+                        f"FusenKV shadow buffer {name}: unsupported ndim "
+                        f"{src.ndim}")
+                # Fail-loud shape assert at Python level (prevents silent
+                # CUDA illegal-address when shapes drift).
+                src_view = src
+                if src.dtype != dst.dtype:
+                    src_view = src.to(dst.dtype)
+                assert dst.shape == src_view.shape, (
+                    f"FusenKV shadow copy {name}: "
+                    f"dst.shape={tuple(dst.shape)} != "
+                    f"src.shape={tuple(src_view.shape)}")
+                dst.copy_(src_view)
+                # Clone view so caller's tensor is independent of the
+                # persistent shadow buffer (prevents aliasing across
+                # graph-capture iterations; P8).
+                return dst.clone()
+
+            _block_table = _shadow_copy(
+                attn_metadata.block_table,
+                self._shadow_block_table, "block_table")
+            _seq_lens = _shadow_copy(
+                attn_metadata.seq_lens,
+                self._shadow_seq_lens, "seq_lens")
+            _slot_mapping = _shadow_copy(
+                attn_metadata.slot_mapping,
+                self._shadow_slot_mapping, "slot_mapping")
+            _query_start_loc = _shadow_copy(
+                attn_metadata.query_start_loc,
+                self._shadow_query_start_loc, "query_start_loc")
+
+            # Retain refs so Python GC doesn't free them while GPU is still
+            # reading. Previous step's clones are safe to release here (the
+            # event fence above guarantees completion).
             self._prev_block_table = _block_table
             self._prev_seq_lens = _seq_lens
             self._prev_slot_mapping = _slot_mapping

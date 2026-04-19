@@ -199,6 +199,31 @@ STRATEGY_PRESETS: dict[str, list[str]] = {
     "explore": list(STRATEGY_CATALOG.keys()),
 }
 
+# ASI-2 Layer 1: Per-task-type max_tokens defaults.
+# The flat 4096 default means every request holds KV blocks for 4K tokens
+# even when most tasks finish in 200-500 tokens. Setting tighter per-type
+# limits lets the KV allocator reclaim blocks earlier at high concurrency.
+# These are *budget caps*, not targets — generation still stops at EOS.
+DEFAULT_MAX_TOKENS: dict[str, int] = {
+    "bug_fix": 4096,
+    "feature": 8192,
+    "refactor": 4096,
+    "architecture": 8192,
+    "optimize": 4096,
+    "test": 4096,
+    "review": 2048,
+    "explore": 8192,
+    # Task categories from moa_router keyword classification
+    "chat": 2048,
+    "summarize": 1024,
+    "translate": 2048,
+    "qa": 2048,
+    "code_gen": 4096,
+}
+
+# Fallback for unknown task types
+DEFAULT_MAX_TOKENS_FALLBACK = 4096
+
 
 def get_strategy(name: str) -> Strategy:
     """Get a strategy by name, or create a pass-through strategy for unknown names."""

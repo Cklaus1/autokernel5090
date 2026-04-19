@@ -9,6 +9,7 @@ Shapes:
     q, k, v : [N, H, D]   (ragged batch, all requests concatenated)
     mask    : [N, N]        bool, True = attend
     output  : [N, H, D]
+    lse     : [N, H]        float32, log-sum-exp per (query, head)
 """
 
 import torch
@@ -18,12 +19,13 @@ import triton.language as tl
 
 @triton.jit
 def masked_attention_kernel(
-    Q, K, V, Out, Mask,
+    Q, K, V, Out, Mask, LSE,
     stride_qn, stride_qh, stride_qd,
     stride_kn, stride_kh, stride_kd,
     stride_vn, stride_vh, stride_vd,
     stride_on, stride_oh, stride_od,
     stride_mn, stride_mk,
+    stride_lse_n, stride_lse_h,
     N, sm_scale,
     BLOCK_D: tl.constexpr,
     MAX_N: tl.constexpr,
@@ -82,8 +84,16 @@ def masked_attention_kernel(
     o_ptrs = Out + pid_n * stride_on + pid_h * stride_oh + tl.arange(0, BLOCK_D) * stride_od
     tl.store(o_ptrs, acc.to(Out.dtype.element_ty))
 
+    # Store log-sum-exp: lse = m_i + log(l_i)
+    # Uses natural log via tl.log; m_i was tracked in natural-log space via exp2
+    # but scaled with log2(e), so convert back: m_i_nat = m_i (scores are raw),
+    # and l_i accumulates exp2(...*log2(e)) = exp(...), so tl.log(l_i) is correct.
+    lse_val = m_i + tl.log(l_i)
+    lse_ptr = LSE + pid_n * stride_lse_n + pid_h * stride_lse_h
+    tl.store(lse_ptr, lse_val.to(tl.float32))
 
-def masked_attention(q, k, v, mask, sm_scale=None):
+
+def masked_attention(q, k, v, mask, sm_scale=None, return_lse=True):
     """Attention with custom bool mask.
 
     Args:
@@ -92,8 +102,11 @@ def masked_attention(q, k, v, mask, sm_scale=None):
         v: [N, H, D] value
         mask: [N, N] bool (True = attend)
         sm_scale: softmax scale (default 1/sqrt(D))
+        return_lse: if True (default), return (out, lse); if False, return out only
     Returns:
         out: [N, H, D]
+        lse: [N, H] float32, log-sum-exp values (only when return_lse=True)
+             Compatible with FlashInfer's merge_state(o1, s1, o2, s2).
     """
     N, H, D = q.shape
     assert k.shape == v.shape == q.shape
@@ -103,6 +116,7 @@ def masked_attention(q, k, v, mask, sm_scale=None):
         sm_scale = 1.0 / (D ** 0.5)
 
     out = torch.empty_like(q)
+    lse = torch.empty((N, H), dtype=torch.float32, device=q.device)
 
     # Round D up to power of 2 for Triton
     BLOCK_D = triton.next_power_of_2(D)
@@ -111,14 +125,18 @@ def masked_attention(q, k, v, mask, sm_scale=None):
 
     grid = (N, H)
     masked_attention_kernel[grid](
-        q, k, v, out, mask,
+        q, k, v, out, mask, lse,
         q.stride(0), q.stride(1), q.stride(2),
         k.stride(0), k.stride(1), k.stride(2),
         v.stride(0), v.stride(1), v.stride(2),
         out.stride(0), out.stride(1), out.stride(2),
         mask.stride(0), mask.stride(1),
+        lse.stride(0), lse.stride(1),
         N, sm_scale,
         BLOCK_D=BLOCK_D,
         MAX_N=MAX_N,
     )
+
+    if return_lse:
+        return out, lse
     return out

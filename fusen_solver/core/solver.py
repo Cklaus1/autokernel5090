@@ -80,6 +80,7 @@ class FusenSolver:
         self.scoring_engine = scoring_engine or ScoringEngine()
         self.learning_engine = learning_engine or LearningEngine()
         self.memory = memory or AgentMemory()
+        self._configured_max_tokens = max_tokens
         self.max_tokens = max_tokens
         self.default_n = default_n
         self.auto_n = auto_n
@@ -113,24 +114,36 @@ class FusenSolver:
         Returns:
             SolveResult with ranked solutions and optional merge.
         """
+        # ASI-2 L1: Apply per-task-type max_tokens to free KV blocks earlier.
+        # Restore after solve so the solver instance stays reusable.
+        from fusen_solver.strategies.presets import DEFAULT_MAX_TOKENS, DEFAULT_MAX_TOKENS_FALLBACK
+        saved_max_tokens = self.max_tokens
+        self.max_tokens = DEFAULT_MAX_TOKENS.get(
+            problem.problem_type, self._configured_max_tokens
+        )
+        logger.debug("max_tokens for %s: %d", problem.problem_type, self.max_tokens)
+
         # Determine mode
         mode = problem.solve_mode
         if mode == "auto":
             mode = self.learning_engine.suggest_mode(problem)
             logger.info("Auto mode selected: %s", mode)
 
-        if mode == "collaborative":
-            return await self.solve_collaborative(problem)
+        try:
+            if mode == "collaborative":
+                return await self.solve_collaborative(problem)
 
-        if mode == "decomposed":
-            return await self.solve_decomposed(problem)
+            if mode == "decomposed":
+                return await self.solve_decomposed(problem)
 
-        if mode == "racing":
-            return await self.solve_racing(problem, n=n, strategies=strategies)
+            if mode == "racing":
+                return await self.solve_racing(problem, n=n, strategies=strategies)
 
-        return await self.solve_isolated(
-            problem, n=n, strategies=strategies, merge=merge, on_solution=on_solution
-        )
+            return await self.solve_isolated(
+                problem, n=n, strategies=strategies, merge=merge, on_solution=on_solution
+            )
+        finally:
+            self.max_tokens = saved_max_tokens
 
     async def solve_isolated(
         self,

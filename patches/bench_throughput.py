@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ORPHANED — standalone script never imported or called from any launcher as of 2026-04-19; superseded by bench_gemma4_nvfp4.py and bench_concurrency_sweep.py; see plans/dead_code_audit_20260419.md
 """Benchmark vLLM throughput at various concurrency levels."""
 import requests
 import time

@@ -1,0 +1,54 @@
+{
+  "model": "Qwen3-30B-A3B-NVFP4",
+  "max_tokens": 128,
+  "results": [
+    {
+      "concurrency": 64,
+      "n_requests": 64,
+      "max_tokens": 128,
+      "wall_s": 14.01,
+      "gen_tok_s": 584.5,
+      "total_tok_s": 840.3,
+      "p50_latency_s": 13.96,
+      "errors": 0,
+      "prompt_tokens": 3584,
+      "gen_tokens": 8192
+    },
+    {
+      "concurrency": 128,
+      "n_requests": 128,
+      "max_tokens": 128,
+      "wall_s": 15.42,
+      "gen_tok_s": 1062.5,
+      "total_tok_s": 1527.3,
+      "p50_latency_s": 15.3,
+      "errors": 0,
+      "prompt_tokens": 7168,
+      "gen_tokens": 16384
+    },
+    {
+      "concurrency": 256,
+      "n_requests": 256,
+      "max_tokens": 128,
+      "wall_s": 19.0,
+      "gen_tok_s": 1725.0,
+      "total_tok_s": 2479.6,
+      "p50_latency_s": 18.73,
+      "errors": 0,
+      "prompt_tokens": 14336,
+      "gen_tokens": 32768
+    },
+    {
+      "concurrency": 512,
+      "n_requests": 512,
+      "max_tokens": 128,
+      "wall_s": 26.91,
+      "gen_tok_s": 2435.7,
+      "total_tok_s": 3501.3,
+      "p50_latency_s": 26.43,
+      "errors": 0,
+      "prompt_tokens": 28672,
+      "gen_tokens": 65536
+    }
+  ]
+}

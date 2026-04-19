@@ -1,3 +1,4 @@
+# ORPHANED — not imported by any launcher or runtime path as of 2026-04-19; see plans/dead_code_audit_20260419.md
 """
 EarlyAbortStreamWrapper — thin middleware for vLLM SSE streams.
 

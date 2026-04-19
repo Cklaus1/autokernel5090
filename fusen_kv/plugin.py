@@ -318,7 +318,23 @@ def _patch_cudagraph_mode_override():
 
         def _patched_resolve(self, *args, **kwargs):
             requested_mode = self.cudagraph_mode
-            result = original_resolve(self, *args, **kwargs)
+
+            try:
+                result = original_resolve(self, *args, **kwargs)
+            except ValueError as e:
+                # New vLLM raises ValueError when CG support=NEVER and mode=FULL.
+                # We intercept and suppress this: FusenCache handles mixed→eager
+                # fallback at dispatch time, so FULL mode is safe even with
+                # NEVER CG support declared. The scheduler needs FULL mode for
+                # optimal batch formation at high concurrency.
+                if requested_mode == CUDAGraphMode.FULL and "NEVER" in str(e):
+                    logger.info(
+                        "FusenKV: suppressing FULL+NEVER ValueError, keeping "
+                        "FULL mode (mixed batches fall through to eager)"
+                    )
+                    self.cudagraph_mode = CUDAGraphMode.FULL
+                    return CUDAGraphMode.FULL
+                raise
 
             # If user requested FULL but it was downgraded to FULL_DECODE_ONLY,
             # restore FULL. The FusenCache backend handles mixed batches in
@@ -357,6 +373,9 @@ def _register_startup_hook():
     pass
 
 
+_REGISTERED = False
+
+
 def register():
     """Register FusenKV backend with vLLM.
 
@@ -364,7 +383,15 @@ def register():
     1. Register CUSTOM attention backend → FusenKVBackend
     2. Patch CacheDType to accept our dtype strings (k4v4, k8v8, etc.)
     3. Patch backend selection to route our dtypes to CUSTOM
+
+    Idempotent: safe to call multiple times (launch_vllm.py + vLLM plugin
+    discovery both call register(); the second call is a no-op).
     """
+    global _REGISTERED
+    if _REGISTERED:
+        logger.debug("FusenKV: register() already called, skipping (idempotent)")
+        return
+    _REGISTERED = True
     try:
         from vllm.v1.attention.backends.registry import (
             AttentionBackendEnum,
@@ -394,11 +421,9 @@ def register():
         _patch_gemma4_backend_override()
 
         # Step 7: Prevent CUDA graph mode downgrade (new vLLM auto-resolves)
-        # NOTE: _patch_cudagraph_mode_override() exists but is NOT called here.
-        # FULL mode causes mixed-batch CUDA graph replay to crash (Discovery #57).
-        # Instead, we accept FULL_DECODE_ONLY and compensate with larger capture
-        # sizes + max_num_seqs=64 in the launch config. This achieves ~3,500 tok/s
-        # at C=64/128 without crashes.
+        # T1-B FIX: Now safe to enable FULL mode because forward() no longer
+        # allocates from the default memory pool (shadow buffers + in-place ops).
+        _patch_cudagraph_mode_override()
 
         # Step 8: Startup hooks
         _register_startup_hook()

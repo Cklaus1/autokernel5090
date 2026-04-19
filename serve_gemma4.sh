@@ -91,6 +91,8 @@ docker run -d \
     > /dev/null 2>&1
 
 echo "Container started. Waiting for server..."
+# GPU-isolation post-launch check (WSL2 UUID leak detection)
+sleep 10 && docker logs "${CONTAINER_NAME}" 2>&1 | grep "GPU-ISOLATION-CHECK" || true
 
 # Health check with timeout
 TIMEOUT=180

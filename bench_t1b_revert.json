@@ -1,0 +1,26 @@
+{
+  "model": "/models/gemma-4-26B-A4B-it-NVFP4-modelopt",
+  "results": [
+    {
+      "C": 32,
+      "N": 64,
+      "wall": 5.42,
+      "gen_tok_s": 737.7,
+      "err": 32
+    },
+    {
+      "C": 64,
+      "N": 128,
+      "wall": 0.76,
+      "gen_tok_s": 0.0,
+      "err": 128
+    },
+    {
+      "C": 128,
+      "N": 128,
+      "wall": 0.14,
+      "gen_tok_s": 0.0,
+      "err": 128
+    }
+  ]
+}

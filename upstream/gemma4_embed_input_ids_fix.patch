@@ -1,0 +1,100 @@
+From: vLLM FusenCache team
+Subject: [PATCH] fix(models/gemma4_mm): avoid aliasing scheduler's is_mm_embed
+ double-buffer in embed_input_ids
+
+Gemma4ForConditionalGeneration.embed_input_ids() crashes with a CUDA
+illegal memory access once the v1 engine runs >=4 concurrent requests with
+async scheduling and cudagraph_mode=FULL:
+
+    File ".../vllm/model_executor/models/gemma4_mm.py", line 1257, in embed_input_ids
+        is_multimodal = is_multimodal.to(input_ids.device)
+    torch.AcceleratorError: CUDA error: an illegal memory access was
+    encountered
+
+`is_multimodal` is a slice view into gpu_model_runner.is_mm_embed_buffers[i].gpu.
+The buffer pair is double-buffered on the CPU side only; the GPU storage
+of each buffer is re-used every other iteration. With async scheduling,
+iteration N+2's non-blocking copy_to_gpu() can overwrite the same GPU
+bytes while iteration N's in-flight CUDA-graph replay is still reading
+them from torch.where(is_multimodal, zeros_like(input_ids), input_ids).
+The `.to()` line is simply the next CUDA API call and therefore where the
+deferred error surfaces.
+
+Two surgical changes:
+
+1. Only take the PLE-mask path when real multimodal embeddings are
+   present. Gemma3n's equivalent method feeds input_ids straight into
+   get_per_layer_input_embeddings(); Gemma4 added the mask kernel and with
+   it the racy read. Text-only batches (the common case for conversational
+   serving) now bypass the mask entirely, matching Gemma3n semantics.
+
+2. When the mask is genuinely needed, clone `is_multimodal` onto our own
+   storage (and force the device cast to blocking) so downstream kernels
+   do not alias the scheduler's shared double-buffer. The clone is a
+   bool[n] tensor - sub-microsecond on modern GPUs.
+
+Fixes concurrent-batch crashes reproducible with:
+  - Gemma4 (e.g., 26B NVFP4)
+  - cudagraph_mode=FULL, prefix caching on, chunked prefill on
+  - --async-scheduling (the default)
+  - Any attention backend slower than FlashAttention (FusenCache k4v4b64,
+    custom quantized KV caches, etc.) - the wider forward window makes the
+    race easy to hit.
+
+Related prior art: the companion async-scheduling fix in
+gpu_model_runner.synchronize_input_prep() (CUDA event + stream barrier)
+addresses the same failure *class* but a *different* code path; it fences
+input_ids / block_tables between steps, not the is_mm_embed buffers that
+are read inside `_preprocess`.
+
+Backport note: vLLM 0.19.1 and earlier do not ship gemma4_mm.py (Gemma4
+support was added on main after 0.19.1). No backport required.
+
+---
+ vllm/model_executor/models/gemma4_mm.py | 31 ++++++++++++++++++++++++-------
+ 1 file changed, 25 insertions(+), 6 deletions(-)
+
+diff --git a/vllm/model_executor/models/gemma4_mm.py b/vllm/model_executor/models/gemma4_mm.py
+--- a/vllm/model_executor/models/gemma4_mm.py
++++ b/vllm/model_executor/models/gemma4_mm.py
+@@ -1219,13 +1219,32 @@ class Gemma4ForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP):
+         if self.per_layer_embeddings is not None:
+             # Mask multimodal tokens (image/audio) to 0 for PLE
+             # computation (using token_type_ids == 0 as text_mask).
+             # Replicate this: map image token positions to token 0.
+-            if is_multimodal is not None:
+-                is_multimodal = is_multimodal.to(input_ids.device)
+-                ple_input_ids = torch.where(
+-                    is_multimodal, torch.zeros_like(input_ids), input_ids
+-                )
+-            else:
++            #
++            # `is_multimodal` is a slice view into the gpu_model_runner's
++            # shared `is_mm_embed_buffers` double-buffer. The CPU side is
++            # double-buffered to hide the prep-vs-forward race, but the
++            # GPU storage of each buffer is reused every other iteration.
++            # Running `torch.where(is_multimodal, ...)` on that view while
++            # iteration N+2's non_blocking=True copy_to_gpu() is in flight
++            # produces a CUDA illegal memory access under async scheduling
++            # + cudagraph_mode=FULL. Mitigate both ways:
++            #   (a) skip the mask kernel entirely when no multimodal
++            #       embeddings are actually present (matches Gemma3n), and
++            #   (b) when the mask is needed, clone onto our own storage so
++            #       downstream kernels no longer alias the scheduler buffer.
++            has_mm_embeds = multimodal_embeddings is not None and (
++                isinstance(multimodal_embeddings, torch.Tensor)
++                or len(multimodal_embeddings) > 0
++            )
++            if is_multimodal is not None and has_mm_embeds:
++                is_multimodal = is_multimodal.to(
++                    input_ids.device, non_blocking=False
++                ).clone()
++                ple_input_ids = torch.where(
++                    is_multimodal, torch.zeros_like(input_ids), input_ids
++                )
++            else:
+                 ple_input_ids = input_ids
+
+             per_layer_inputs = self.language_model.model.get_per_layer_inputs(
+--
+2.34.1
