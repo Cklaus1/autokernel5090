@@ -57,7 +57,7 @@ exec python3 /fusen/fusen_kv/launch_vllm.py \
   --kv-cache-dtype k4v4b64 \
   --gpu-memory-utilization 0.85 \
   -cc.mode none \
-  -cc.cudagraph_mode full --cudagraph-capture-sizes '[1,2,4,8,16,32]'
+  -cc.cudagraph_mode full --cudagraph-capture-sizes 1 2 4 8 16 32
 "
 
 echo "    container ${NAME} starting on port ${PORT}"

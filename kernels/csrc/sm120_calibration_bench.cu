@@ -336,7 +336,7 @@ __global__ void bench3_mma_throughput(uint64_t* __restrict__ out, int iters) {
     __syncwarp();
 
     uint64_t t0 = clock64();
-    #pragma unroll BENCH3_UNROLL
+    #pragma unroll 16
     for (int i = 0; i < iters; i++) {
         wmma::mma_sync(fc, fa, fb, fc);
     }

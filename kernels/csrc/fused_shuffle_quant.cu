@@ -311,7 +311,15 @@ std::vector<torch::Tensor> fused_shuffle_quant(
     );
 
     dim3 grid(M_sorted);
-    dim3 block(min(n_blocks, 1024));
+    // Round block size up to the next warp-aligned boundary (multiple of 32).
+    // This ensures the SM scheduler sees full warps: Qwen3 n_blocks=128 → 128
+    // (already warp-aligned), Gemma4 n_blocks=176 → 192 (6 full warps) instead
+    // of the non-multiple 176 (5.5 warps).  Threads with block_idx >= n_blocks
+    // hit the early-return guard above and contribute zero active work.
+    // Tag: W8_T2N_gemma4_tile_variant
+    int block_threads = ((n_blocks + 31) / 32) * 32;
+    if (block_threads > 1024) block_threads = 1024;
+    dim3 block(block_threads);
 
     auto stream = at::cuda::getCurrentCUDAStream();
 

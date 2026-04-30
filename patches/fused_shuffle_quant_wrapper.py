@@ -72,14 +72,70 @@ import torch
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# Environment flag for kill switch
+# Environment flags
 # ============================================================
 _ENABLED = os.environ.get("AUTOKERNEL_FUSED_SHUFFLE_QUANT", "1") != "0"
+
+# Fix A (W7_T2N_gemma4_fix_AB) + W8 smart-gate: persistent-buffer mode.
+#
+# AUTOKERNEL_FUSED_PERSISTENT_BUF semantics (W8_T2N_persistent_buf_smart_gate):
+#   "auto" (default) — shape-gated heuristic (active per call):
+#                        ON  when padded_k_int32 >= 44 OR num_experts > 128
+#                            padded_k_int32 = ceil(K//16, 4) from scales_i32.shape[1]
+#                            Gemma4 K=2816: n_blocks=176 → padded_k_int32=44 ≥ 44 → ON
+#                            Qwen3  K=2048: n_blocks=128 → padded_k_int32=32, E=128 → OFF
+#                        Eliminates the 0.77× Qwen3 regression (copy_ at K=2048 was
+#                        harmful) while preserving the Fix A benefit for Gemma4 (K=2816).
+#   "1"   — always persistent (Fix A original, useful for debug/isolation)
+#   "0"   — always direct view (pre-Fix-A, safety valve)
+_PERSISTENT_BUF_RAW = os.environ.get("AUTOKERNEL_FUSED_PERSISTENT_BUF", "auto").strip().lower()
+# Translate legacy "1"/"0" to named modes for clarity.
+if _PERSISTENT_BUF_RAW == "1":
+    _PERSISTENT_BUF_MODE = "always"
+elif _PERSISTENT_BUF_RAW == "0":
+    _PERSISTENT_BUF_MODE = "never"
+else:
+    _PERSISTENT_BUF_MODE = "auto"  # default: shape-gated smart gate
+
+# P1 log: auto-decision logged once per (padded_k_int32, num_experts) combo.
+_persistent_buf_auto_logged: set = set()
+
+# Fix B (W7_T2N_gemma4_fix_AB): minimum M_sorted threshold for fused path.
+# Below threshold → fall through to two-op baseline (faster at low batch).
+# Qwen3 C=512 → M_sorted=4096 >> 512 → fused path fires.
+# Gemma4 C=32  → M_sorted=256  < 512  → two-op fallthrough.
+_FUSED_MIN_TOKENS: int = int(
+    os.environ.get("AUTOKERNEL_FUSED_MIN_TOKENS", "512")
+)
+
+# Rate-limit flag: log the M_sorted < threshold warning only on first occurrence.
+_min_tokens_warned_once: bool = False
+# P2: log fused-path "active" banner exactly once per process.
+_fused_active_logged_once: bool = False
+# W8_T2N_gemma4_tile_variant: log tile selection once per (K_padded, block) combo.
+_gemma4_tile_logged: dict = {}
 
 # T2-N v3: silu+mul+FP4 quant epilogue (GEMM1 post-op fusion).
 # Tag: W6_T2N_silu_epilogue.  Plans ref: plans/t2n_silu_epilogue_impl.md.
 # Off by default until bench banks the win.
 _SILU_EPI_ENABLED = os.environ.get("AUTOKERNEL_T2N_SILU_EPILOGUE", "0") == "1"
+
+# W7 / T2-N Rank 3: fused unshuffle_rows + topk_weighted_sum for post-GEMM2.
+# Tag: W7_T2N_rank3_unshuffle_weightedsum. Plans ref:
+#   plans/t2n_rank3_unshuffle_weightedsum_impl.md
+# Default ON while T2-N is active — standalone microbench (RTX PRO 6000, SM120)
+# shows 4.24x kernel speedup at Qwen3-30B-A3B shape (M=512, K=2048, topk=8):
+# two-pass 48.66 µs → fused 11.48 µs, saving 37 µs per MoE layer. 48 MoE
+# layers × 37 µs = ~1.8 ms saved per decode step. Set env var to 0 to fall
+# through to stock `ops.shuffle_rows + (c3 * w).sum(dim=1)` path.
+_UNSHUF_WSUM_ENABLED = (
+    os.environ.get("AUTOKERNEL_FUSED_UNSHUFFLE_WEIGHTEDSUM", "1") != "0"
+)
+# Lazy import + first-call banner state (P2).
+_unshuf_wsum_fn = None
+_unshuf_wsum_loaded: Optional[bool] = None
+_unshuf_wsum_logged_once: bool = False  # P2: banner on first call
+_unshuf_wsum_fallthrough_logged: bool = False  # P1: log fallthrough once
 
 # ============================================================
 # Kernel load state
@@ -289,6 +345,138 @@ def fused_silu_fp4_epilogue(
 
 
 # ============================================================
+# T2-N Rank 3 (W7): fused unshuffle_rows + topk_weighted_sum
+# ============================================================
+
+
+def _try_load_unshuffle_weightedsum():
+    """Import the Triton fused_unshuffle_weightedsum kernel.
+
+    Returns the callable on success, None on failure. P1 pattern: every
+    fall-through path logs the failure class once so silent regressions are
+    visible in server logs. Behaviour is backwards-compatible: on failure the
+    caller falls through to the stock two-pass path (ops.shuffle_rows +
+    weighted-sum reduce).
+    """
+    global _unshuf_wsum_fn, _unshuf_wsum_loaded
+    global _unshuf_wsum_fallthrough_logged
+    if _unshuf_wsum_loaded is not None:
+        return _unshuf_wsum_fn
+    if not _UNSHUF_WSUM_ENABLED:
+        _unshuf_wsum_loaded = False
+        return None
+    # W8 belt-and-suspenders (tag W8_rank3_silent_fire_debug): ensure the repo
+    # root is on sys.path so `kernels.triton.fused_unshuffle_weightedsum`
+    # resolves even if the launcher forgot to add it to PYTHONPATH. This file
+    # lives at <repo>/patches/fused_shuffle_quant_wrapper.py, so <repo> =
+    # parent of parent of __file__.
+    import sys
+    _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
+    try:
+        from kernels.triton.fused_unshuffle_weightedsum import (
+            fused_unshuffle_weightedsum as _fn,
+        )
+        _unshuf_wsum_fn = _fn
+        _unshuf_wsum_loaded = True
+        logger.info(
+            "[T2N-UNSHUF-WSUM] Triton kernel loaded "
+            "(kernels.triton.fused_unshuffle_weightedsum)"
+        )
+        # Also print to stdout: vLLM's default logger configuration filters
+        # many INFO lines from non-allowlisted loggers, so ensure the load
+        # banner is ALWAYS visible in `docker logs`.
+        print(
+            "[T2N-UNSHUF-WSUM] Triton kernel loaded "
+            "(kernels.triton.fused_unshuffle_weightedsum)",
+            flush=True,
+        )
+        return _fn
+    except Exception as e:
+        if not _unshuf_wsum_fallthrough_logged:
+            # P1: surface class+message of the failure. Emit to both the
+            # logger and stdout so a silent ModuleNotFoundError cannot hide
+            # (see W8_rank3_silent_fire_debug root-cause write-up).
+            logger.warning(
+                "[T2N-UNSHUF-WSUM] import failed (class=%s msg=%s) — "
+                "falling back to two-pass shuffle_rows + weighted sum "
+                "(sys.path[0:3]=%r)",
+                type(e).__name__, e, sys.path[:3],
+            )
+            print(
+                f"[T2N-UNSHUF-WSUM] import failed class={type(e).__name__} "
+                f"msg={e} -- falling back to two-pass path",
+                flush=True,
+            )
+            _unshuf_wsum_fallthrough_logged = True
+        _unshuf_wsum_loaded = False
+        return None
+
+
+def is_unshuffle_weightedsum_available() -> bool:
+    """Return True iff the Triton fused unshuffle+weightedsum kernel is usable."""
+    return _try_load_unshuffle_weightedsum() is not None
+
+
+def fused_unshuffle_weightedsum_moe(
+    output: torch.Tensor,           # [M, K] BF16/FP16 destination (token-ordered)
+    c3: torch.Tensor,               # [M*topk, K] BF16/FP16 sorted (pre-unshuffle)
+    c_map: torch.Tensor,            # [M*topk] int32 sorted-row index per dst row
+    topk_weights: torch.Tensor,     # [M, topk] float32 or same dtype as output
+    m: int,
+    num_topk: int,
+) -> bool:
+    """Drop-in replacement for the two-pass tail of run_cutlass_moe_fp4:
+
+        c3 = ops.shuffle_rows(c3, c_map)
+        output.copy_(
+            (c3.view(m, num_topk, k) *
+             topk_weights.view(m, num_topk, 1).to(output.dtype)).sum(dim=1),
+            non_blocking=True,
+        )
+
+    Writes result directly to `output`. Returns True if the fused kernel
+    fired, False if caller should run the two-pass fallback.
+    """
+    global _unshuf_wsum_logged_once
+
+    fn = _try_load_unshuffle_weightedsum()
+    if fn is None:
+        return False
+
+    try:
+        if not _unshuf_wsum_logged_once:
+            # P2: confirm the fused path is actually active on first call.
+            # Also print to stdout — vLLM logger filters many INFO lines.
+            banner = (
+                f"[T2N-UNSHUF-WSUM] active n_tokens={m} topk={num_topk} "
+                f"k={c3.shape[1]} (4.24x microbench speedup at Qwen3 shape)"
+            )
+            logger.info("%s", banner)
+            print(banner, flush=True)
+            _unshuf_wsum_logged_once = True
+
+        fn(
+            c3,
+            c_map,
+            topk_weights,
+            m,
+            num_topk,
+            out_dtype=output.dtype,
+            output=output,
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            "[T2N-UNSHUF-WSUM] fused call failed (class=%s msg=%s) — "
+            "falling back to two-pass path",
+            type(e).__name__, e,
+        )
+        return False
+
+
+# ============================================================
 # Scale format conversion
 # ============================================================
 
@@ -371,6 +559,28 @@ def fused_shuffle_and_quant_moe(
 
     M_sorted = a_map.shape[0]
     K = a.shape[1]
+
+    # ------------------------------------------------------------------
+    # Fix B (W7_T2N_gemma4_fix_AB): FUSED_MIN_TOKENS threshold.
+    # The fused kernel amortisation floor is ~512 M_sorted tokens.
+    # Below threshold the per-call fixed overhead (launch + scale-buffer)
+    # makes the fused path slower than the two-op baseline.
+    # Qwen3 C=512 → M_sorted=4096 >> 512 → fused fires (no change).
+    # Gemma4 C=32  → M_sorted=256  < 512  → two-op fallthrough (fix).
+    # ------------------------------------------------------------------
+    global _min_tokens_warned_once
+    if M_sorted < _FUSED_MIN_TOKENS:
+        if not _min_tokens_warned_once:
+            logger.warning(
+                "[T2N] %s M_sorted=%d < threshold=%d — using two-op baseline "
+                "(set AUTOKERNEL_FUSED_MIN_TOKENS=%d to override)",
+                __name__, M_sorted, _FUSED_MIN_TOKENS, M_sorted,
+            )
+            _min_tokens_warned_once = True
+        sorted_a = ops.shuffle_rows(a, a_map)
+        return ops.scaled_fp4_experts_quant(
+            sorted_a, a1_gscale, expert_offsets, blockscale_offsets, num_topk
+        )
     assert K % 16 == 0, f"K={K} must be divisible by 16 for NVFP4"
 
     n_blocks = K // 16  # = K/16 FP4 blocks per row, each needing 1 FP8 scale byte
@@ -380,7 +590,48 @@ def fused_shuffle_and_quant_moe(
     # The kernel pads up to padded_nb internally if needed, but n_blocks is the logical count.
     # After the call, scales_flat has M_sorted * n_blocks bytes.
 
+    # W8_T2N_gemma4_tile_variant: compute the warp-aligned block size that the
+    # kernel will use (mirrors the rounding in fused_shuffle_quant.cu host fn).
+    # Qwen3  K=2048: n_blocks=128 → block_threads=128 (4 warps, exact)
+    # Gemma4 K=2816: n_blocks=176 → block_threads=192 (6 warps, 16 idle+early-return)
+    _padded_k_int32_for_gate = (n_blocks + 3) // 4
+    _block_threads = min(((n_blocks + 31) // 32) * 32, 1024)
+
     try:
+        # P2 pattern (KILL_PATTERNS §P2): confirm fused path active on first call.
+        global _fused_active_logged_once
+        if not _fused_active_logged_once:
+            logger.info(
+                "[T2N] %s fused path active: M_sorted=%d K=%d "
+                "persistent_buf_mode=%s min_tokens_threshold=%d "
+                "(tag W8_T2N_persistent_buf_smart_gate)",
+                __name__, M_sorted, K,
+                _PERSISTENT_BUF_MODE,
+                _FUSED_MIN_TOKENS,
+            )
+            _fused_active_logged_once = True
+
+        # W8_T2N_gemma4_tile_variant — P2 banner: log tile selection once per
+        # (K, block_threads) combination.  Fires on first Gemma4 call with
+        # K_padded=44 (K=2816) showing block upgrade from 176 → 192.
+        global _gemma4_tile_logged
+        if not _gemma4_tile_logged.get((_padded_k_int32_for_gate, _block_threads)):
+            _gemma4_tile_logged[(_padded_k_int32_for_gate, _block_threads)] = True
+            if _padded_k_int32_for_gate >= 44:
+                logger.info(
+                    "[T2N] Gemma4-tile dispatch: K_padded=%d block=%d "
+                    "(n_blocks=%d → %d threads, 6 warps × 32; "
+                    "tag W8_T2N_gemma4_tile_variant)",
+                    _padded_k_int32_for_gate, _block_threads,
+                    n_blocks, _block_threads,
+                )
+            else:
+                logger.info(
+                    "[T2N] Qwen3-tile dispatch: K_padded=%d block=%d "
+                    "(n_blocks=%d; tag W8_T2N_gemma4_tile_variant)",
+                    _padded_k_int32_for_gate, _block_threads, n_blocks,
+                )
+
         # Run fused kernel: gather-read from unsorted 'a', write FP4 directly.
         # Scales are written in CUTLASS 128x4 swizzled format.
         # Kernel signature: (a, a_map, expert_offsets, blockscale_offsets, num_topk)
@@ -392,6 +643,7 @@ def fused_shuffle_and_quant_moe(
             num_topk,           # int
         )
         # ============================================================
+        # Fix A (W7_T2N_gemma4_fix_AB) + W8 smart-gate:
         # Scale-buffer shape handling.
         # ------------------------------------------------------------
         # The .so allocates `[num_experts*320, padded_k_int32]` int32 for
@@ -401,30 +653,59 @@ def fused_shuffle_and_quant_moe(
         # given `row_in_buf` maps to the SAME flat byte offset in either
         # buffer.
         #
-        # We have two options:
-        #  (A) `AUTOKERNEL_FUSED_RESHAPE_SCALES=1` — copy the small buffer
-        #      into a persistent-cached big buffer matching vLLM's shape.
-        #      Adds ~50-100 µs per call (memcpy of several MB per MoE GEMM).
-        #  (B) default — hand the small fp8_e4m3fn view directly to
-        #      cutlass_fp4_moe_mm. Works as long as every expert's range
-        #      `blockscale_offsets[e] + tokens_in_expert` stays inside
-        #      `num_experts*320` rows. For Qwen3-30B-A3B (E=128, topk=8,
-        #      typical batches <=512 tokens) this is always satisfied:
-        #      worst case tokens_sorted = 512*8 = 4096 << 128*320 = 40,960.
+        # W8 SMART GATE (AUTOKERNEL_FUSED_PERSISTENT_BUF=auto, new default):
+        #   Activate persistent buffer only when the shape benefits.
+        #   Threshold: padded_k_int32 >= 44 OR num_experts > 128
+        #     - Qwen3  K=2048: n_blocks=128, padded_k_int32=32, E=128
+        #               → 32 >= 44? No.  128 > 128? No.  → direct view (no copy)
+        #     - Gemma4 K=2816: n_blocks=176, padded_k_int32=44, E=64
+        #               → 44 >= 44? Yes.                → persistent buffer (Fix A)
+        #   Rationale for K_padded=44 threshold:
+        #     padded_k_int32 = ceil(K // 16, 4) = ceil(n_blocks, 4)
+        #     K=2048 → n_blocks=128 → padded_k_int32 = 32   (< 44, OFF)
+        #     K=2816 → n_blocks=176 → padded_k_int32 = 44   (≥ 44, ON)
+        #     Any future K≥2816 will also have padded_k_int32≥44 → persistent.
         #
-        # Measured on Qwen3-30B-A3B NVFP4 in e2e serving:
-        #   option (A) at C=512 → 2,435 tok/s (reshape cost crushes gain)
-        #   option (B) at C=512 → 17,614 tok/s (1.34x vs baseline 14k)
-        # Default is therefore (B); opt-in to (A) only if the small buffer
-        # would be too small for your deployment (very large batches or
-        # very small num_experts).
+        # ALWAYS-ON  (AUTOKERNEL_FUSED_PERSISTENT_BUF=1): Fix A original.
+        # ALWAYS-OFF (AUTOKERNEL_FUSED_PERSISTENT_BUF=0): direct view, no copy.
+        #
+        # Measured regressions/wins:
+        #   persistent buf ON  at Qwen3 C=1024 → 17,928 tok/s (0.77× KILL)
+        #   direct view        at Qwen3 C=1024 → 23,254 tok/s (banked peak)
+        #   persistent buf ON  at Gemma4 C=128 → 1,633 tok/s (Fix A win vs 0.62× KILL)
         # ============================================================
-        if os.environ.get("AUTOKERNEL_FUSED_RESHAPE_SCALES", "0") == "1":
+        padded_k_int32 = scales_i32.shape[1]
+        num_experts = expert_offsets.shape[0] - 1
+
+        # W8 shape-aware gate: resolve whether persistent buffer should fire.
+        if _PERSISTENT_BUF_MODE == "always":
+            use_persistent_buf = True
+        elif _PERSISTENT_BUF_MODE == "never":
+            use_persistent_buf = False
+        else:
+            # "auto": activate when shape benefits from persistent buffer.
+            # Gemma4 K=2816 → padded_k_int32=44 ≥ 44 → ON.
+            # Qwen3  K=2048 → padded_k_int32=32 < 44, E=128 ≤ 128 → OFF.
+            use_persistent_buf = (
+                padded_k_int32 >= 44  # K > 2048 threshold (Gemma4-like shapes)
+                or num_experts > 128
+            )
+            # P1 (KILL_PATTERNS §P1): log auto-decision once per shape combo.
+            log_key = (padded_k_int32, num_experts)
+            if log_key not in _persistent_buf_auto_logged:
+                _persistent_buf_auto_logged.add(log_key)
+                logger.info(
+                    "[T2N] auto persistent_buf=%s: K_padded=%d num_experts=%d "
+                    "(tag W8_T2N_persistent_buf_smart_gate)",
+                    "ON" if use_persistent_buf else "OFF",
+                    padded_k_int32, num_experts,
+                )
+
+        if use_persistent_buf:
             try:
                 MAX_TPE = envs.VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE
             except Exception:
                 MAX_TPE = 163840
-            padded_k_int32 = scales_i32.shape[1]
             target_rows = MAX_TPE * num_topk
             dev_idx = (
                 scales_i32.device.index if scales_i32.device.type == "cuda" else -1
@@ -438,6 +719,13 @@ def fused_shuffle_and_quant_moe(
                     device=scales_i32.device,
                 )
                 _scale_buf_cache[cache_key] = full_scales
+                logger.info(
+                    "[T2N] %s persistent scale buf allocated: "
+                    "shape=(%d, %d) dtype=%s device=%s — "
+                    "set AUTOKERNEL_FUSED_PERSISTENT_BUF=0 to disable",
+                    __name__, target_rows, padded_k_int32,
+                    full_scales.dtype, full_scales.device,
+                )
             small_rows = scales_i32.shape[0]
             if small_rows <= target_rows:
                 n = small_rows * padded_k_int32
@@ -451,9 +739,10 @@ def fused_shuffle_and_quant_moe(
                 )
             rep_a_blockscale = full_scales.view(torch.float8_e4m3fn)
         else:
-            # Small-buffer direct view — matches historical T2-N e2e path.
-            # Safe while `blockscale_offsets[e] + tokens_in_expert` never
-            # exceeds `scales_i32.shape[0]`.
+            # Direct view path: no copy, no alloc overhead beyond kernel output.
+            # Historical T2-N e2e path for Qwen3 and large-batch shapes where
+            # the .so's own buffer is sufficient and copy_ would cost >5 µs.
+            # Safe when blockscale_offsets rows fit within num_experts*320 rows.
             rep_a_blockscale = scales_i32.view(torch.float8_e4m3fn)
 
         return fp4_out, rep_a_blockscale
@@ -603,19 +892,44 @@ def patch_cutlass_moe_fp4() -> bool:
             )
             del int_fp4, int_blockscale
 
-            c3 = ops.shuffle_rows(c3, c_map)
-
             assert output.dtype == out_dtype
-            if not apply_router_weight_on_input:
-                output.copy_(
-                    (
-                        c3.view(m, num_topk, k)
-                        * topk_weights.view(m, num_topk, 1).to(out_dtype)
-                    ).sum(dim=1),
-                    non_blocking=True,
+            # W7 Rank 3 fast path: fuse unshuffle (c_map gather) + topk-weighted
+            # sum into a single Triton kernel, eliminating the [M*topk, K]
+            # BF16 intermediate that shuffle_rows would otherwise write. The
+            # apply_router_weight_on_input branch skips the weighted sum (the
+            # weights were already baked into `a`); that case still uses the
+            # two-pass path below. The non-apply-on-input branch is the 100%
+            # case for Qwen3-30B-A3B.
+            fused_wsum_fired = False
+            if (
+                not apply_router_weight_on_input
+                and _UNSHUF_WSUM_ENABLED
+                and c3.is_contiguous()
+            ):
+                fused_wsum_fired = fused_unshuffle_weightedsum_moe(
+                    output=output,
+                    c3=c3,
+                    c_map=c_map,
+                    topk_weights=topk_weights,
+                    m=m,
+                    num_topk=num_topk,
                 )
-            else:
-                output.copy_(c3.view(m, num_topk, k).sum(dim=1), non_blocking=True)
+
+            if not fused_wsum_fired:
+                # Stock two-pass path (preserved for BC + router_weight_on_input).
+                c3 = ops.shuffle_rows(c3, c_map)
+                if not apply_router_weight_on_input:
+                    output.copy_(
+                        (
+                            c3.view(m, num_topk, k)
+                            * topk_weights.view(m, num_topk, 1).to(out_dtype)
+                        ).sum(dim=1),
+                        non_blocking=True,
+                    )
+                else:
+                    output.copy_(
+                        c3.view(m, num_topk, k).sum(dim=1), non_blocking=True
+                    )
 
         cutlass_moe.run_cutlass_moe_fp4 = _patched_run_cutlass_moe_fp4
         _patch_applied = True

@@ -92,13 +92,24 @@ fused_norm_fp4_qwen3-0.1.dist-info/RECORD,,
 REC
 
 # Activate both plugins.
-export PYTHONPATH=/autokernel/patches:${PYTHONPATH:-}
+# W8 fix (tag W8_rank3_silent_fire_debug): repo root /autokernel MUST be on
+# PYTHONPATH so the Rank 3 import
+#     from kernels.triton.fused_unshuffle_weightedsum import ...
+# succeeds. Without this, the import in
+# patches/fused_shuffle_quant_wrapper.py:_try_load_unshuffle_weightedsum
+# raises ModuleNotFoundError, the P1 warning fires under logger name
+# fused_shuffle_quant_wrapper (outside vLLM allowlist, easy to miss),
+# and the two-pass fallback runs silently.
+export PYTHONPATH=/autokernel:/autokernel/patches:${PYTHONPATH:-}
 export AUTOKERNEL_FUSED_SHUFFLE_QUANT=1
 export AUTOKERNEL_FUSED_SHUFFLE_QUANT_SO=/autokernel/workspace/fused_shuffle_quant_sm120a.so
 export AUTOKERNEL_FUSED_NORM_FP4_QWEN3=1
 export AUTOKERNEL_FUSED_NORM_FP4_SO=/autokernel/workspace/fused_rms_norm_fp4_cu13.so
 export VLLM_PLUGINS=fused_shuffle_quant,fused_norm_fp4_qwen3
 export VLLM_USE_FLASHINFER_MOE_FP4=0
+export AUTOKERNEL_FUSED_UNSHUFFLE_WEIGHTEDSUM=1
+export AUTOKERNEL_FUSED_QKNORM_ROPE=1
+export AUTOKERNEL_FUSED_PERSISTENT_BUF=0
 
 exec python3 "$@"
 '

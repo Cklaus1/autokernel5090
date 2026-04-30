@@ -46,6 +46,24 @@ def register() -> None:
         )
         return
 
+    # W8 (tag W8_rank3_silent_fire_debug): eagerly probe the Rank 3 Triton
+    # kernel so the [T2N-UNSHUF-WSUM] load/import-failure banner appears at
+    # plugin-register time (startup) instead of first MoE forward. This makes
+    # silent fall-throughs visible in `docker logs` before any traffic.
+    try:
+        if hasattr(wrap, "is_unshuffle_weightedsum_available"):
+            _ok = wrap.is_unshuffle_weightedsum_available()
+            print(
+                f"[T2N-UNSHUF-WSUM] eager-probe at plugin register: "
+                f"available={_ok}",
+                flush=True,
+            )
+    except Exception as e:
+        logger.warning(
+            "[T2N-UNSHUF-WSUM] eager-probe raised class=%s msg=%s",
+            type(e).__name__, e,
+        )
+
     try:
         ok = wrap.patch_cutlass_moe_fp4()
         if ok:
