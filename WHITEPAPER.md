@@ -668,7 +668,7 @@ cd autokernel
 
 ### B.2 Required Patches
 
-14 patches must be applied to vLLM 0.17.0 and FlashInfer 0.6.4 for full functionality. See `DFLASH_PATCHES.md` for the complete patch list.
+14 patches must be applied to vLLM 0.17.0 and FlashInfer 0.6.4 for full functionality. See `docs/research/DFLASH_PATCHES.md` for the complete patch list.
 
 ### B.3 Experiment Reproduction
 
